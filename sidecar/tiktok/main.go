@@ -160,9 +160,9 @@ func handleConnect(c connectCmd) {
 // userMap flattens gotiktoklive.User into the shape the widgets already read
 // from TikFinity/IndoFinity, so no widget-side mapping is needed.
 //
-// userBadges is intentionally empty: gotiktoklive exposes badge *names* but not
-// their image URLs, and the widget only renders a badge it can load. Sending a
-// nameless entry would render an empty slot. Tracked as a known gap in README.
+// userBadges mirrors TikFinity's entry: {badgeSceneType, image, name, color}.
+// The vendored gotiktoklive is patched to expose the image URL and background
+// colour (upstream stored only a protobuf debug dump and no image at all).
 func userMap(u *gotiktoklive.User) map[string]interface{} {
 	if u == nil {
 		return map[string]interface{}{}
@@ -171,12 +171,23 @@ func userMap(u *gotiktoklive.User) map[string]interface{} {
 	if u.ProfilePicture != nil && len(u.ProfilePicture.Urls) > 0 {
 		avatar = u.ProfilePicture.Urls[len(u.ProfilePicture.Urls)-1]
 	}
+	badges := []interface{}{}
+	if u.Badge != nil {
+		for _, b := range u.Badge.Badges {
+			badges = append(badges, map[string]interface{}{
+				"badgeSceneType": b.SceneType,
+				"image":          b.Image,
+				"name":           b.Name,
+				"color":          b.Color,
+			})
+		}
+	}
 	return map[string]interface{}{
 		"userId":            strconv.FormatInt(u.ID, 10),
 		"uniqueId":          u.Username,
 		"nickname":          u.Nickname,
 		"profilePictureUrl": avatar,
-		"userBadges":        []interface{}{},
+		"userBadges":        badges,
 	}
 }
 
