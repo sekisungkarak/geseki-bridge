@@ -127,16 +127,21 @@ Snapshot Poll()
 				auto playback = s.GetPlaybackInfo();
 				if (playback) {
 					out.playback_status = static_cast<int>(playback.PlaybackStatus());
-					// PlaybackType/PlaybackRate are nullable IReference<T>
-					// (unlike PlaybackStatus, which is a plain enum); calling
-					// .Value() on an empty reference throws, which the outer
-					// catch would turn into a dropped session. Test first.
+					// Every property below is a nullable IReference<T>. When
+					// a session does not report one, the reference comes back
+					// EMPTY, and calling .Value() on an empty reference is a
+					// null dereference inside the WinRT projection — an access
+					// violation that no catch(...) can intercept (it is SEH,
+					// not C++ EH). Each one must therefore be tested before
+					// its value is read; skipping that check crashed OBS.
 					if (auto ptype = playback.PlaybackType())
 						out.playback_type = static_cast<int>(ptype.Value());
 					if (auto prate = playback.PlaybackRate())
 						out.playback_rate = prate.Value();
-					out.is_shuffle_active = playback.IsShuffleActive().Value();
-					out.auto_repeat_mode = static_cast<int>(playback.AutoRepeatMode().Value());
+					if (auto pshuf = playback.IsShuffleActive())
+						out.is_shuffle_active = pshuf.Value();
+					if (auto prepeat = playback.AutoRepeatMode())
+						out.auto_repeat_mode = static_cast<int>(prepeat.Value());
 				}
 
 				auto timeline = s.GetTimelineProperties();
