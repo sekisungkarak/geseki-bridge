@@ -961,95 +961,80 @@ std::string ContentTypeForImage(const std::vector<uint8_t> &bytes)
 	return "application/octet-stream";
 }
 
-std::string SettingsPage()
+// Renders the Active Audio Sources page: an HTML view of every Windows media
+// session the bridge can see. The page fetches /now-playing and re-renders once
+// a second, so it stays live without the server pushing anything. This is the
+// geseki-bridge equivalent of the old SMTC Bridge /sessions page.
+std::string SessionsPage()
 {
-	geseki::bridge::Config c;
-	{
-		std::lock_guard<std::mutex> lk(g_cfg_mu);
-		c = g_cfg;
-	}
-	const std::string initial =
-		std::string("{\"port\":") + std::to_string(c.port) +
-		",\"tiktok_username\":\"" + geseki::json::Escape(c.tiktok_username) +
-		"\",\"tiktok_api_key\":\"" + geseki::json::Escape(c.tiktok_api_key) +
-		"\",\"tiktok_autoconnect\":" + (c.tiktok_autoconnect ? "true" : "false") + "}";
-
-	std::string html;
-	html += "<!doctype html><html><head><meta charset=\"utf-8\">";
-	html += "<title>Geseki Bridge</title>";
-	html += "<style>body{font:14px/1.5 system-ui,Segoe UI,sans-serif;max-width:560px;";
-	html += "margin:40px auto;padding:0 16px;color:#e6e6e6;background:#16181d}";
-	html += "h1{font-size:20px}label{display:block;margin:14px 0 4px}";
-	html += "input[type=text],input[type=password],input[type=number]{width:100%;padding:8px;";
-	html += "box-sizing:border-box;background:#22252c;border:1px solid #3a3f4a;color:#e6e6e6;border-radius:6px}";
-	html += "button{margin-top:18px;padding:9px 16px;background:#3f7d5a;border:0;color:#fff;";
-	html += "border-radius:6px;cursor:pointer}small{color:#9aa3b2}#msg{margin-left:12px}</style>";
-	html += "</head><body><h1>Geseki Bridge</h1>";
-	html += "<p><small>Endpoint: <code>ws://127.0.0.1:" + std::to_string(c.port) +
-		"/ws</code> &middot; protocol " + std::to_string(GESEKI_BRIDGE_PROTOCOL) +
-		"</small></p>";
-	html += "<label>TikTok username (without @)</label><input id=\"u\" type=\"text\">";
-	html += "<label>TikTok API key (optional)</label><input id=\"k\" type=\"password\">";
-	html += "<label><input id=\"a\" type=\"checkbox\"> Auto-connect on OBS start</label>";
-	html += "<label>Bridge port (restart OBS to apply)</label><input id=\"p\" type=\"number\" min=\"1\" max=\"65535\">";
-	html += "<div><button id=\"save\">Save</button><span id=\"msg\"></span></div>";
-	html += "<script>const INIT=" + initial + ";";
-	html += "u.value=INIT.tiktok_username;k.value=INIT.tiktok_api_key;";
-	html += "a.checked=INIT.tiktok_autoconnect;p.value=INIT.port;";
-	html += "save.onclick=async()=>{const body={tiktok_username:u.value,tiktok_api_key:k.value,";
-	html += "tiktok_autoconnect:a.checked,port:Number(p.value)};";
-	html += "const r=await fetch('/config',{method:'POST',headers:{'Content-Type':'application/json'},";
-	html += "body:JSON.stringify(body)});msg.textContent=r.ok?'Saved.':('Failed ('+r.status+')');};";
-	html += "</script></body></html>";
-	return html;
+	return R"HTML(<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Geseki Bridge — Active Audio Sources</title>
+<style>
+ :root{color-scheme:dark}
+ body{font:14px/1.5 system-ui,Segoe UI,sans-serif;margin:0;background:#16181d;color:#e6e6e6}
+ header{padding:20px 24px 6px}
+ h1{font-size:19px;margin:0 0 4px}
+ .sub{color:#9aa3b2;font-size:12px}
+ main{padding:8px 24px 32px;display:grid;gap:12px}
+ .card{background:#1d2026;border:1px solid #2c313a;border-radius:10px;padding:14px 16px}
+ .card.active{border-color:#3f7d5a}
+ .row{display:flex;gap:12px;align-items:flex-start}
+ .thumb{width:56px;height:56px;border-radius:8px;object-fit:cover;background:#2c313a;flex:0 0 auto}
+ .meta{min-width:0;flex:1}
+ .title{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+ .artist{color:#c3cad6;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+ .app{color:#7f8a9c;font-size:12px;margin-top:2px;word-break:break-all}
+ .badge{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;background:#2c313a;color:#c3cad6;white-space:nowrap}
+ .badge.playing{background:#24483a;color:#7fe0b0}
+ .bar{height:4px;background:#2c313a;border-radius:2px;margin-top:10px;overflow:hidden}
+ .bar>i{display:block;height:100%;background:#3f7d5a;width:0}
+ .empty{color:#9aa3b2;padding:24px;text-align:center;border:1px dashed #2c313a;border-radius:10px}
+ .time{color:#7f8a9c;font-size:12px;margin-top:6px;font-variant-numeric:tabular-nums}
+</style>
+</head>
+<body>
+<header>
+ <h1>Active Audio Sources</h1>
+ <div class="sub">Geseki Bridge &middot; <span id="count">0</span> session(s) &middot; <span id="cur"></span></div>
+</header>
+<main id="list"><div class="empty">Loading&hellip;</div></main>
+<script>
+var STATUS=["Closed","Opened","Changing","Stopped","Playing","Paused"];
+function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c];});}
+function fmt(ms){ms=Math.max(0,ms|0);var s=Math.floor(ms/1000);var m=Math.floor(s/60);var r=s%60;return m+":"+(r<10?"0":"")+r;}
+function card(s){
+ var mp=s.media_properties||{}, pi=s.playback_info||{}, tl=s.timeline_properties||{};
+ var playing=pi.PlaybackStatus===4;
+ var pos=tl.Position||0, end=tl.EndTime||0;
+ var pct=end>0?Math.min(100,Math.max(0,(pos/end)*100)):0;
+ var img=mp.Thumbnail?'<img class="thumb" src="'+esc(mp.Thumbnail)+'" onerror="this.style.visibility=\'hidden\'">':'<div class="thumb"></div>';
+ var title=esc(mp.Title)||"(no title)";
+ var artist=esc(mp.Artist)+(mp.AlbumTitle?" &middot; "+esc(mp.AlbumTitle):"");
+ return '<div class="card'+(playing?" active":"")+'">'
+  +'<div class="row">'+img+'<div class="meta">'
+  +'<div class="title">'+title+'</div>'
+  +'<div class="artist">'+artist+'</div>'
+  +'<div class="app">'+esc(s.source_app_id)+'</div>'
+  +'</div><span class="badge'+(playing?" playing":"")+'">'+(STATUS[pi.PlaybackStatus]||"?")+'</span></div>'
+  +'<div class="bar"><i style="width:'+pct+'%"></i></div>'
+  +'<div class="time">'+fmt(pos)+' / '+fmt(end)+'</div></div>';
 }
-
-// Parses a POST body that may be either JSON or urlencoded form data.
-geseki::bridge::Config ParseConfigBody(const std::string &body,
-				       const geseki::bridge::Config &base)
-{
-	geseki::bridge::Config cfg = base;
-
-	geseki::json::Value v;
-	if (geseki::json::Value::Parse(body, v) && v.is_object()) {
-		if (const auto *p = v.find("port"); p && p->is_number())
-			cfg.port = static_cast<int>(p->as_int(cfg.port));
-		if (const auto *u = v.find("tiktok_username"); u && u->is_string())
-			cfg.tiktok_username = u->text;
-		if (const auto *k = v.find("tiktok_api_key"); k && k->is_string())
-			cfg.tiktok_api_key = k->text;
-		if (const auto *a = v.find("tiktok_autoconnect"); a && a->is_bool())
-			cfg.tiktok_autoconnect = a->boolean;
-		return cfg;
-	}
-
-	// Fallback: urlencoded form fields.
-	std::map<std::string, std::string> fields;
-	std::stringstream ss(body);
-	std::string pair;
-	while (std::getline(ss, pair, '&')) {
-		const auto eq = pair.find('=');
-		if (eq == std::string::npos)
-			continue;
-		fields[UrlDecode(pair.substr(0, eq))] = UrlDecode(pair.substr(eq + 1));
-	}
-	auto get = [&](const char *key) {
-		auto it = fields.find(key);
-		return it == fields.end() ? std::string() : it->second;
-	};
-	if (fields.count("port")) {
-		const int p = std::atoi(get("port").c_str());
-		if (p > 0 && p <= 65535)
-			cfg.port = p;
-	}
-	if (fields.count("tiktok_username"))
-		cfg.tiktok_username = get("tiktok_username");
-	if (fields.count("tiktok_api_key"))
-		cfg.tiktok_api_key = get("tiktok_api_key");
-	if (fields.count("tiktok_autoconnect"))
-		cfg.tiktok_autoconnect =
-			get("tiktok_autoconnect") == "true" || get("tiktok_autoconnect") == "on";
-	return cfg;
+function tick(){
+ fetch("/now-playing",{cache:"no-store"}).then(function(r){return r.json();}).then(function(d){
+  var sessions=d.sessions||[];
+  document.getElementById("count").textContent=sessions.length;
+  document.getElementById("cur").textContent=d.current_session_id?("focused: "+d.current_session_id):"no focused session";
+  document.getElementById("list").innerHTML=sessions.length?sessions.map(card).join(""):'<div class="empty">No active audio sources.</div>';
+ }).catch(function(){document.getElementById("list").innerHTML='<div class="empty">Bridge unreachable.</div>';});
+}
+tick(); setInterval(tick,1000);
+</script>
+</body>
+</html>)HTML";
 }
 
 bool HandleWebSocketUpgrade(Socket s, const std::map<std::string, std::string> &headers)
@@ -1205,28 +1190,8 @@ void HandleConnection(Socket s, std::shared_ptr<std::atomic<bool>> done)
 					SendHttp(s, 200, ContentTypeForImage(bytes),
 						 std::string(bytes.begin(), bytes.end()), extra);
 				}
-			} else if (path == "/config" && method == "POST") {
-				size_t content_length = 0;
-				if (auto cl = headers.find("content-length");
-				    cl != headers.end())
-					content_length = static_cast<size_t>(
-						std::strtoul(cl->second.c_str(), nullptr, 10));
-				if (content_length > 64 * 1024)
-					content_length = 0;
-				std::string body(content_length, '\0');
-				if (content_length && !RecvAll(s, &body[0], content_length)) {
-					SendHttp(s, 400, "text/plain", "bad body");
-				} else {
-					geseki::bridge::Config base;
-					{
-						std::lock_guard<std::mutex> lk(g_cfg_mu);
-						base = g_cfg;
-					}
-					geseki::bridge::SaveConfig(ParseConfigBody(body, base));
-					SendHttp(s, 200, "application/json", "{\"ok\":true}");
-				}
-			} else if (path == "/" || path == "/index.html") {
-				SendHttp(s, 200, "text/html; charset=utf-8", SettingsPage());
+			} else if (path == "/sessions" || path == "/") {
+				SendHttp(s, 200, "text/html; charset=utf-8", SessionsPage());
 			} else {
 				SendHttp(s, 404, "text/plain", "not found");
 			}
@@ -1472,12 +1437,6 @@ void Stop()
 		WSACleanup();
 }
 
-void ShowSettings()
-{
-	const std::string url = "http://127.0.0.1:" + std::to_string(g_port.load()) + "/";
-	ShellExecuteA(nullptr, "open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-}
-
 Config GetConfig()
 {
 	std::lock_guard<std::mutex> lk(g_cfg_mu);
@@ -1514,7 +1473,6 @@ namespace geseki::bridge {
 
 void Start() {}
 void Stop() {}
-void ShowSettings() {}
 Config GetConfig() { return {}; }
 void SaveConfig(const Config &) {}
 

@@ -1,11 +1,9 @@
 /*
  * Geseki Bridge — native settings dialog (Qt6).
  *
- * The Tools menu opens this dialog instead of a browser page. It edits the
- * same fields as the HTTP settings page (TikTok username, API key,
- * auto-connect and the bridge port) and hands them to bridge-server's
+ * The Tools menu opens this dialog. It edits the TikTok username, API key,
+ * auto-connect and the bridge port, then hands them to bridge-server's
  * SaveConfig(), which persists them and applies the TikTok credentials live.
- * A "Open web page" button keeps the HTTP page reachable as a fallback.
  */
 #include "settings-dialog.hpp"
 
@@ -17,7 +15,6 @@
 #include <QFormLayout>
 #include <QLabel>
 #include <QLineEdit>
-#include <QPushButton>
 #include <QSpinBox>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -71,11 +68,6 @@ void ShowSettingsDialog(void *parent)
 
 	auto *buttons = new QDialogButtonBox(
 		QDialogButtonBox::Save | QDialogButtonBox::Cancel);
-
-	// Keep the browser page reachable without making it the default UI.
-	auto *web = buttons->addButton("Open web page", QDialogButtonBox::ActionRole);
-	QObject::connect(web, &QPushButton::clicked,
-			 []() { geseki::bridge::ShowSettings(); });
 
 	QObject::connect(buttons, &QDialogButtonBox::accepted, &dlg,
 			 &QDialog::accept);

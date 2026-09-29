@@ -30,8 +30,6 @@ static void open_settings(void * /*data*/)
 	// modal to it). obs_frontend_get_main_window returns a QMainWindow* as
 	// void*, so no Qt type leaks into this translation unit.
 	geseki::ui::ShowSettingsDialog(obs_frontend_get_main_window());
-#else
-	geseki::bridge::ShowSettings();
 #endif
 }
 

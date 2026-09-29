@@ -4,7 +4,7 @@
 
 // Geseki Bridge server: one loopback WebSocket endpoint that every Geseki
 // widget connects to, plus a small HTTP surface for health, cover art and the
-// settings page. See docs/protocol.md.
+// Active Audio Sources page. See docs/protocol.md.
 namespace geseki::bridge {
 
 struct Config {
@@ -19,11 +19,6 @@ void Start();
 
 // Stops the server, joins its threads and terminates the sidecar. Idempotent.
 void Stop();
-
-// Opens the settings page (http://127.0.0.1:<port>/) in the default browser.
-// Deliberately browser-based so the plugin needs no Qt and the same page works
-// from inside OBS.
-void ShowSettings();
 
 // Current configuration, loaded from the plugin's config file.
 Config GetConfig();

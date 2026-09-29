@@ -27,9 +27,11 @@ first.
 * **TikTok without a second port.** A small Go sidecar speaks
   newline-delimited JSON over **stdin/stdout**, so nothing extra is exposed.
 * **Native settings dialog.** The Tools menu opens a Qt dialog inside OBS to
-  edit the TikTok username, API key, auto-connect and the port. The plugin's own
-  HTTP page still exists as a fallback (the dialog has an *Open web page*
-  button). Qt is linked from OBS — nothing Qt is bundled.
+  edit the TikTok username, API key, auto-connect and the port. Qt is linked
+  from OBS — nothing Qt is bundled.
+* **Active Audio Sources page.** `http://127.0.0.1:47800/sessions` lists every
+  Windows media session the bridge can see (the old SMTC Bridge `/sessions`
+  page).
 
 ## HTTP surface
 
@@ -38,8 +40,7 @@ first.
 | `GET` | `/health` | liveness probe |
 | `GET` | `/now-playing` | the current `nowplaying` payload (SMTC-Bridge compatible) |
 | `GET` | `/artwork/<app_id>?v=<n>` | cached cover art |
-| `GET` | `/` | settings page |
-| `POST` | `/config` | save settings |
+| `GET` | `/sessions` | **Active Audio Sources** page (live list of media sessions) |
 
 Because `GET /now-playing` matches the old SMTC Bridge schema, an existing
 now-playing widget only needs its port changed to `47800` — no code change.
