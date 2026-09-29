@@ -60,7 +60,7 @@ void ShowSettingsDialog(void *parent)
 	form->addRow("TikTok API key", key);
 	form->addRow(auto_conn);
 	form->addRow("Bridge port", port);
-	outer->addWidget(form);
+	outer->addLayout(form);
 
 	auto *hint = new QLabel(
 		QString("Widgets connect to ws://127.0.0.1:%1/ws. "
