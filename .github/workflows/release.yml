@@ -37,9 +37,14 @@ jobs:
 
       - name: Test vendored TikTok patches
         # Regression guard for our local gotiktoklive patches (avatar, badge,
-        # gift image). It is a nested module, so run tests from inside it.
+        # gift image, emote). It is a nested module, so run tests from inside it.
         working-directory: sidecar/tiktok/third_party/gotiktoklive
         run: go test ./... -v
+
+      - name: Test sidecar
+        # The sidecar's own tests (e.g. the standalone-emote-to-chat reshape).
+        working-directory: sidecar/tiktok
+        run: go test . -v
 
       - name: Configure plugin
         # The CMake project fetches the OBS sources + prebuilt deps declared in

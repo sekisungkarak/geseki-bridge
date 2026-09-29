@@ -87,8 +87,7 @@ A TikTok LIVE event, normalised to the shape the widgets already understand.
 
 | `event`   | Meaning                        | Extra keys on `data` |
 | --------- | ------------------------------ | -------------------- |
-| `chat`    | a viewer posted a comment      | `comment`, `emotes` |
-| `emote`   | a subscriber sent an emote (sticker) | `emotes` |
+| `chat`    | a viewer posted a comment, **or a subscriber sent an emote (sticker)** | `comment`, `emotes` |
 | `gift`    | a gift was sent                | `giftName`, `giftPictureUrl`, `repeatCount`, `repeatEnd`, `giftType` |
 | `follow`  | a viewer followed              | — |
 | `share`   | a viewer shared the stream     | — |
@@ -116,9 +115,7 @@ A TikTok LIVE event, normalised to the shape the widgets already understand.
 
 ### 2.3.1 `emotes`
 
-Both `chat` (a comment that contains emotes) and `emote` (a subscriber
-sticker, sent as its own event with no comment text) carry an `emotes` array,
-flattened to the shape the widget renders:
+`chat` carries an `emotes` array, flattened to the shape the widget renders:
 
 ```json
 {
@@ -133,7 +130,7 @@ flattened to the shape the widget renders:
 * `placeInComment` is the **0-based** index of the placeholder character the
   emote replaces inside `comment` (same contract as TikTok Live Connector).
   TikTok sends one placeholder char per emote; the widget swaps it for the
-  image at that index. Absent for the standalone `emote` event.
+  image at that index.
 * `emotePrivateType`: `0` normal, `1` subscriber wave (`SUB_WAVE`) — how a
   subscriber emote is flagged.
 * The array is always present (possibly empty) on `chat`; widgets that ignore
@@ -141,6 +138,21 @@ flattened to the shape the widget renders:
 
 TikFinity never surfaced this data (its `emotes` array is always empty), so a
 subscriber emote used to reach the widgets as a bare placeholder glyph.
+
+**Subscriber emotes are delivered as `chat`.** TikTok sends a subscriber emote
+(sticker) as its own message with no comment text, but the widgets only render
+emotes that sit inside a comment. The bridge therefore re-shapes it into a
+synthetic `chat` frame: `comment` is one placeholder character per emote
+(U+200B, zero-width) and each emote's `placeInComment` is its 0-based position.
+That way an existing `chat` renderer draws the artwork with no widget-side
+change. There is no separate `emote` event.
+
+TikTok sometimes delivers a subscriber emote through the **chat** path itself
+with an **empty `comment`** while its emotes still carry indexes 0,1,2,… A
+renderer that drops emotes whose index falls outside the text would discard all
+of them, so the bridge pads `comment` with zero-width spaces up to the last
+index whenever the comment is shorter than the emote positions require. A
+comment that already carries its own placeholders is left untouched.
 
 ### 2.4 `nowplaying`
 

@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 
 	gotiktoklive "github.com/steampoweredtaco/gotiktoklive"
@@ -210,14 +211,60 @@ func emoteList(emotes []gotiktoklive.Emote) []interface{} {
 	out := []interface{}{}
 	for _, e := range emotes {
 		out = append(out, map[string]interface{}{
-			"emoteId":        e.EmoteID,
-			"emoteImageUrl":  e.ImageURL,
-			"placeInComment": e.PlaceInComment,
-			"emoteType":      e.EmoteType,
+			"emoteId":          e.EmoteID,
+			"emoteImageUrl":    e.ImageURL,
+			"placeInComment":   e.PlaceInComment,
+			"emoteType":        e.EmoteType,
 			"emotePrivateType": e.PrivateType,
 		})
 	}
 	return out
+}
+
+// standaloneEmoteAsChat re-shapes a standalone subscriber emote into a synthetic
+// `chat` frame so the widget's existing chat renderer draws it with no
+// widget-side change. TikTok sends a subscriber emote as its own message with no
+// comment text and no per-emote index, so we synthesise a comment of one
+// placeholder character per emote and assign each emote the 0-based index of its
+// placeholder — the same contract a real comment's emotes follow. The
+// placeholder is a zero-width space: invisible should a consumer ever show the
+// raw comment, and swapped for the artwork by the chat renderer.
+func standaloneEmoteAsChat(emotes []gotiktoklive.Emote) (string, []interface{}) {
+	fixed := make([]gotiktoklive.Emote, len(emotes))
+	copy(fixed, emotes)
+	var b strings.Builder
+	for i := range fixed {
+		fixed[i].PlaceInComment = i
+		b.WriteRune('\u200b')
+	}
+	return b.String(), emoteList(fixed)
+}
+
+// normalizeComment makes sure every emote's 0-based placeInComment points at a
+// real character in the comment. TikTok usually ships a placeholder char in the
+// comment text for each inline emote, but a subscriber emote sent through the
+// chat path arrives with an EMPTY comment while its emotes still carry indexes
+// 0,1,2,… The widget drops any emote whose index is outside the text
+// (`at >= text.length`), so without this every such emote vanished. We pad the
+// comment with zero-width spaces (invisible if ever shown raw) up to the last
+// index, leaving comments that already carry their own placeholders untouched.
+func normalizeComment(comment string, emotes []gotiktoklive.Emote) string {
+	need := 0
+	for _, e := range emotes {
+		if e.PlaceInComment+1 > need {
+			need = e.PlaceInComment + 1
+		}
+	}
+	runes := []rune(comment)
+	if len(runes) >= need {
+		return comment
+	}
+	var b strings.Builder
+	b.WriteString(comment)
+	for i := len(runes); i < need; i++ {
+		b.WriteRune('\u200b')
+	}
+	return b.String()
 }
 
 func handleEvent(ev gotiktoklive.Event) {
@@ -225,15 +272,21 @@ func handleEvent(ev gotiktoklive.Event) {
 
 	case gotiktoklive.ChatEvent:
 		emit(outMsg{Ev: "tiktok", Event: "chat", Data: withUser(e.User, map[string]interface{}{
-			"comment": e.Comment,
+			"comment": normalizeComment(e.Comment, e.Emotes),
 			"emotes":  emoteList(e.Emotes),
 		})})
 
 	case gotiktoklive.EmoteEvent:
-		// A subscriber emote (sticker). TikTok sends no comment text with it,
-		// so widgets render it from the emote artwork alone.
-		emit(outMsg{Ev: "tiktok", Event: "emote", Data: withUser(e.User, map[string]interface{}{
-			"emotes": emoteList(e.Emotes),
+		// A subscriber emote (sticker). TikTok sends it as its own message with
+		// no comment text, but the widget only renders emotes that sit inside a
+		// comment (its `chat` handler). So re-shape it as a synthetic `chat`
+		// frame: one invisible placeholder character per emote at its 0-based
+		// placeInComment, exactly like a real comment that carries emotes. That
+		// way the emote renders with no widget-side change.
+		comment, emotes := standaloneEmoteAsChat(e.Emotes)
+		emit(outMsg{Ev: "tiktok", Event: "chat", Data: withUser(e.User, map[string]interface{}{
+			"comment": comment,
+			"emotes":  emotes,
 		})})
 
 	case gotiktoklive.GiftEvent:

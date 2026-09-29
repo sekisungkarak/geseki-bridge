@@ -115,12 +115,16 @@ the source:
   `WebcastEmoteChatMessage` (subscriber stickers) were never read, so an emote
   reached the widget as a bare placeholder character. We now emit
   `{emoteId, emoteImageUrl, placeInComment, emoteType, emotePrivateType}` on
-  `chat`, plus a new `emote` event for standalone subscriber emotes.
-  `placeInComment` is the 0-based index of the placeholder char, matching
-  TikTok Live Connector's contract.
+  `chat`. `placeInComment` is the 0-based index of the placeholder char,
+  matching TikTok Live Connector's contract. A standalone subscriber emote has
+  no comment text, so the bridge re-shapes it into a synthetic `chat` frame
+  (one zero-width placeholder per emote) — the widget's existing chat renderer
+  draws it with no widget-side change. A subscriber emote that arrives through
+  the chat path with an empty `comment` is padded with placeholders up to its
+  last emote index, otherwise the renderer drops every emote as out-of-range.
 
 Covered by `sidecar/tiktok/third_party/gotiktoklive/giftpatch_test.go`,
-`badgepatch_test.go` and `emotepatch_test.go`.
+`badgepatch_test.go` and `emotepatch_test.go`, plus `sidecar/tiktok/emoteaschat_test.go`.
 
 ## License
 

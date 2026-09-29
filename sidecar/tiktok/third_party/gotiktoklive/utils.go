@@ -528,8 +528,8 @@ func toEmote(e *pb.Emote) Emote {
 		return Emote{}
 	}
 	em := Emote{
-		EmoteID:    e.GetEmoteId(),
-		EmoteType:  int(e.GetEmoteType()),
+		EmoteID:     e.GetEmoteId(),
+		EmoteType:   int(e.GetEmoteType()),
 		PrivateType: int(e.GetEmotePrivateType()),
 	}
 	if img := e.GetImage(); img != nil && len(img.UrlList) > 0 {
