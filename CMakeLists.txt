@@ -21,8 +21,15 @@ if(ENABLE_FRONTEND_API)
   target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE OBS::obs-frontend-api)
 endif()
 
-# Qt is deliberately unsupported: the settings UI is the plugin's own HTTP page,
-# so the module carries no Qt dependency.
+# The settings UI is a native Qt dialog inside OBS. Qt itself is NOT bundled:
+# OBS already ships it, so we only link against it (the CI pulls the matching
+# obs-deps Qt6 package declared in buildspec.json).
+if(ENABLE_QT)
+  find_package(Qt6 COMPONENTS Widgets Core REQUIRED)
+  target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE Qt6::Core Qt6::Widgets)
+  target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE GESEKI_HAS_QT)
+  set_target_properties(${CMAKE_PROJECT_NAME} PROPERTIES AUTOMOC ON AUTOUIC ON AUTORCC ON)
+endif()
 
 target_sources(
   ${CMAKE_PROJECT_NAME}
@@ -33,6 +40,10 @@ target_sources(
     src/smtc-winrt.cpp
     src/tiktok-supervisor.cpp
 )
+
+if(ENABLE_QT)
+  target_sources(${CMAKE_PROJECT_NAME} PRIVATE src/settings-dialog.cpp)
+endif()
 
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 

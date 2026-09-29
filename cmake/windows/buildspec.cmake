@@ -16,9 +16,10 @@ function(_check_dependencies_windows)
   set(qt6_destination "obs-deps-qt6-VERSION-ARCH")
   set(obs-studio_filename "VERSION.zip")
   set(obs-studio_destination "obs-studio-VERSION")
-  # qt6 is intentionally absent: this plugin has no Qt dependency (the settings
-  # UI is a plain HTTP page), so pulling ~200 MB of Qt would be waste.
-  set(dependencies_list prebuilt obs-studio)
+  # qt6 supplies the headers + import libs for the native settings dialog. It
+  # is only needed at build time; OBS already ships the matching Qt runtime, so
+  # nothing Qt-related is packaged with the plugin.
+  set(dependencies_list prebuilt qt6 obs-studio)
 
   _check_dependencies()
 endfunction()

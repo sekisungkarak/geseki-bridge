@@ -26,8 +26,10 @@ first.
   WinRT inside the plugin; there is no tray app to install or keep running.
 * **TikTok without a second port.** A small Go sidecar speaks
   newline-delimited JSON over **stdin/stdout**, so nothing extra is exposed.
-* **Browser-based settings.** The Tools menu opens the plugin's own HTTP page,
-  so the module carries no Qt dependency.
+* **Native settings dialog.** The Tools menu opens a Qt dialog inside OBS to
+  edit the TikTok username, API key, auto-connect and the port. The plugin's own
+  HTTP page still exists as a fallback (the dialog has an *Open web page*
+  button). Qt is linked from OBS — nothing Qt is bundled.
 
 ## HTTP surface
 
@@ -48,7 +50,8 @@ now-playing widget only needs its port changed to `47800` — no code change.
    [Releases](../../releases).
 2. Extract `geseki-bridge` into your OBS plugins folder, i.e.
    `%ALLUSERSPROFILE%\obs-studio\plugins\`.
-3. Restart OBS. A **Geseki Bridge Settings…** item appears under *Tools*.
+3. Restart OBS. A **Geseki Bridge** item appears under *Tools*; it opens a
+   dialog to set the TikTok username, API key, auto-connect and the port.
 
 The TikTok sidecar (`geseki-bridge-tiktok.exe`) must sit **next to**
 `geseki-bridge.dll`; the plugin resolves it relative to its own module. The
@@ -81,6 +84,7 @@ CI does all of the above on every tag (`v*`) — see
 ```
 docs/protocol.md            the wire contract (v1)
 src/plugin-main.cpp         module entry + Tools menu item
+src/settings-dialog.*       native Qt6 settings dialog
 src/bridge-server.cpp       WebSocket + HTTP + SMTC polling + TikTok wiring
 src/json-util.*             tiny JSON emitters + parser
 src/smtc-winrt.*            WinRT SMTC reader and transport control
@@ -107,7 +111,8 @@ the source:
 - **Gift images** — `GiftEvent` had no image field, so `giftPictureUrl` was
   hardcoded empty. We surface `image > icon > giftLabelIcon`.
 
-Covered by `sidecar/tiktok/third_party/gotiktoklive/giftpatch_test.go`.
+Covered by `sidecar/tiktok/third_party/gotiktoklive/giftpatch_test.go` and
+`badgepatch_test.go`.
 
 ## License
 

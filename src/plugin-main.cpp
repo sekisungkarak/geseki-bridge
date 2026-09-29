@@ -1,8 +1,8 @@
 /*
  * Geseki Bridge — OBS plugin entry point.
  *
- * Registers the plugin, owns the bridge server lifetime, and adds a small
- * Tools menu entry that opens the settings dialog. All real work lives in
+ * Registers the plugin, owns the bridge server lifetime, and adds a Tools
+ * menu entry that opens the native settings dialog. All real work lives in
  * bridge-server.cpp (local WebSocket + HTTP) and smtc-winrt.cpp (media).
  */
 #include <obs-module.h>
@@ -10,6 +10,10 @@
 
 #include "bridge-server.hpp"
 #include "plugin-support.hpp"
+
+#ifdef GESEKI_HAS_QT
+#include "settings-dialog.hpp"
+#endif
 
 OBS_DECLARE_MODULE()
 OBS_MODULE_USE_DEFAULT_LOCALE("geseki-bridge", "en-US")
@@ -21,7 +25,14 @@ MODULE_EXPORT const char *obs_module_description(void)
 
 static void open_settings(void * /*data*/)
 {
+#ifdef GESEKI_HAS_QT
+	// Pass the OBS main window so the dialog is parented (centred on OBS and
+	// modal to it). obs_frontend_get_main_window returns a QMainWindow* as
+	// void*, so no Qt type leaks into this translation unit.
+	geseki::ui::ShowSettingsDialog(obs_frontend_get_main_window());
+#else
 	geseki::bridge::ShowSettings();
+#endif
 }
 
 bool obs_module_load(void)
