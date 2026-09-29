@@ -116,7 +116,7 @@ func handleConnect(c connectCmd) {
 	}
 	tt.SetInfoHandler(func(a ...interface{}) { logf("info: %v", a) })
 	tt.SetWarnHandler(func(a ...interface{}) { logf("warn: %v", a) })
-	tt.SetErrorHandler(func(err error) { logf("error: %v", err) })
+	tt.SetErrorHandler(func(a ...interface{}) { logf("error: %v", a) })
 
 	ctx, cancel := context.WithCancel(context.Background())
 	setSession(nil, cancel)
@@ -203,12 +203,12 @@ func handleEvent(ev gotiktoklive.Event) {
 		// filters on repeatEnd, and it needs repeatCount to show the total, so
 		// every frame is forwarded rather than collapsing them here.
 		emit(outMsg{Ev: "tiktok", Event: "gift", Data: withUser(e.User, map[string]interface{}{
-			"giftName":        e.Name,
-			"giftPictureUrl":  "", // not exposed by gotiktoklive; widget falls back to its own icon
-			"repeatCount":     e.RepeatCount,
-			"repeatEnd":       e.RepeatEnd,
-			"giftType":        e.Type,
-			"giftCost":        e.Cost,
+			"giftName":       e.Name,
+			"giftPictureUrl": "", // not exposed by gotiktoklive; widget falls back to its own icon
+			"repeatCount":    e.RepeatCount,
+			"repeatEnd":      e.RepeatEnd,
+			"giftType":       e.Type,
+			"giftCost":       e.Diamonds,
 		})})
 
 	case gotiktoklive.UserEvent:
