@@ -127,8 +127,14 @@ Snapshot Poll()
 				auto playback = s.GetPlaybackInfo();
 				if (playback) {
 					out.playback_status = static_cast<int>(playback.PlaybackStatus());
-					out.playback_type = static_cast<int>(playback.PlaybackType());
-					out.playback_rate = playback.PlaybackRate();
+					// PlaybackType/PlaybackRate are nullable IReference<T>
+					// (unlike PlaybackStatus, which is a plain enum); calling
+					// .Value() on an empty reference throws, which the outer
+					// catch would turn into a dropped session. Test first.
+					if (auto ptype = playback.PlaybackType())
+						out.playback_type = static_cast<int>(ptype.Value());
+					if (auto prate = playback.PlaybackRate())
+						out.playback_rate = prate.Value();
 					out.is_shuffle_active = playback.IsShuffleActive().Value();
 					out.auto_repeat_mode = static_cast<int>(playback.AutoRepeatMode().Value());
 				}

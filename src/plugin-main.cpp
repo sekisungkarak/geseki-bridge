@@ -9,7 +9,7 @@
 #include <obs-frontend-api.h>
 
 #include "bridge-server.hpp"
-#include "plugin-support.h"
+#include "plugin-support.hpp"
 
 OBS_DECLARE_MODULE()
 OBS_MODULE_USE_DEFAULT_LOCALE("geseki-bridge", "en-US")
