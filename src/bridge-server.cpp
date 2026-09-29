@@ -335,6 +335,43 @@ bool RecvLine(Socket s, std::string &out, size_t max = 8192)
 
 // --------------------------------------------------------------------- config
 
+// obs_module_config_path() only *builds* the path — it never creates the
+// directory. On a fresh install plugin_config/geseki-bridge/ therefore does not
+// exist, and the first save died with
+//   os_quick_write_utf8_file_safe: failed to write to
+//   .../plugin_config/geseki-bridge/config.json.tmp
+// leaving the port/username/autoconnect settings silently unsaved. Create the
+// module's config directory (and any missing parents) before writing.
+void EnsureParentDir(const std::string &path)
+{
+	const size_t slash = path.find_last_of("\\/");
+	if (slash == std::string::npos || slash == 0)
+		return;
+
+	const std::string dir = path.substr(0, slash);
+
+	// OBS hands back a UTF-8 path; the Win32 directory API wants UTF-16.
+	const int n = MultiByteToWideChar(CP_UTF8, 0, dir.c_str(), -1, nullptr, 0);
+	if (n <= 0)
+		return;
+	std::wstring w(static_cast<size_t>(n), L'\0');
+	MultiByteToWideChar(CP_UTF8, 0, dir.c_str(), -1, &w[0], n);
+	w.resize(static_cast<size_t>(n - 1)); // drop the trailing NUL
+
+	// Create one component at a time so a missing intermediate directory does
+	// not make the whole call fail. Components that already exist report
+	// ERROR_ALREADY_EXISTS, which is not an error here.
+	for (size_t i = 1; i <= w.size(); ++i) {
+		const bool at_end = (i == w.size());
+		if (!at_end && w[i] != L'\\' && w[i] != L'/')
+			continue;
+		const std::wstring part = w.substr(0, i);
+		if (part.empty() || part.back() == L':')
+			continue; // "E:" is a drive, not a directory to create
+		CreateDirectoryW(part.c_str(), nullptr);
+	}
+}
+
 std::string ConfigFilePath()
 {
 	char *path = obs_module_config_path("config.json");
@@ -380,12 +417,17 @@ void SaveConfigFile(const geseki::bridge::Config &cfg)
 	if (path.empty())
 		return;
 
+	// The directory does not exist on a fresh install; without this the write
+	// fails and the settings are lost without any visible error.
+	EnsureParentDir(path);
+
 	obs_data_t *data = obs_data_create();
 	obs_data_set_int(data, "port", cfg.port);
 	obs_data_set_string(data, "tiktok_username", cfg.tiktok_username.c_str());
 	obs_data_set_string(data, "tiktok_api_key", cfg.tiktok_api_key.c_str());
 	obs_data_set_bool(data, "tiktok_autoconnect", cfg.tiktok_autoconnect);
-	obs_data_save_json_safe(data, path.c_str(), "tmp", "bak");
+	if (!obs_data_save_json_safe(data, path.c_str(), "tmp", "bak"))
+		obs_log(LOG_WARNING, "geseki-bridge: could not save config to %s", path.c_str());
 	obs_data_release(data);
 }
 
