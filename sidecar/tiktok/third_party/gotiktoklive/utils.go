@@ -10,6 +10,7 @@ import (
 
 	"github.com/erni27/imcache"
 	pb "github.com/steampoweredtaco/gotiktoklive/proto"
+	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/reflect/protoregistry"
@@ -335,6 +336,69 @@ func toRecipientID(r *pb.WebcastGiftMessage_UserGiftReciever) int64 {
 	return int64(r.UserId)
 }
 
+// badgeTextLabel returns the human-readable label of a badge's TextBadge.
+//
+// TikTok's live schema puts the rendered label (e.g. "No. 3" for Top Gifter,
+// "New gifter") in field 2, which the vendored .proto does not declare — it
+// only knows field 3 ("defaultPattern"). The value therefore arrives as an
+// unknown field and is dropped by the generated getter, which is why such
+// badges rendered with an icon but no number. Prefer field 2, fall back to the
+// declared field 3.
+func badgeTextLabel(t *pb.BadgeStruct_TextBadge) string {
+	if t == nil {
+		return ""
+	}
+	if s := textBadgeLabelFromUnknown(t.ProtoReflect().GetUnknown()); s != "" {
+		return s
+	}
+	return t.GetDefaultPattern()
+}
+
+// textBadgeLabelFromUnknown walks raw protobuf bytes and returns field 2 as a
+// string. Unknown bytes are appended verbatim, so a hand-rolled walk is the
+// only way to read a field the descriptor does not know about.
+func textBadgeLabelFromUnknown(b []byte) string {
+	for len(b) > 0 {
+		num, typ, n := protowire.ConsumeTag(b)
+		if n < 0 {
+			return ""
+		}
+		b = b[n:]
+		switch typ {
+		case protowire.BytesType:
+			v, n := protowire.ConsumeBytes(b)
+			if n < 0 {
+				return ""
+			}
+			if num == 2 {
+				return string(v)
+			}
+			b = b[n:]
+		case protowire.VarintType:
+			_, n := protowire.ConsumeVarint(b)
+			if n < 0 {
+				return ""
+			}
+			b = b[n:]
+		case protowire.Fixed32Type:
+			_, n := protowire.ConsumeFixed32(b)
+			if n < 0 {
+				return ""
+			}
+			b = b[n:]
+		case protowire.Fixed64Type:
+			_, n := protowire.ConsumeFixed64(b)
+			if n < 0 {
+				return ""
+			}
+			b = b[n:]
+		default:
+			return ""
+		}
+	}
+	return ""
+}
+
 func toUser(u *pb.User) *User {
 	if u == nil {
 		return &User{}
@@ -383,8 +447,8 @@ func toUser(u *pb.User) *User {
 					b.Color = c.GetBackground().BackgroundColorCode
 				}
 				b.Name = c.GetStr()
-				if b.Name == "" && c.GetText() != nil {
-					b.Name = c.GetText().DefaultPattern
+				if b.Name == "" {
+					b.Name = badgeTextLabel(c.GetText())
 				}
 			case *pb.BadgeStruct_Image:
 				if t.Image.GetImage() != nil && len(t.Image.GetImage().UrlList) > 0 {
@@ -397,11 +461,52 @@ func toUser(u *pb.User) *User {
 			}
 			badges = append(badges, b)
 		}
+
+		// PATCH (upstream gap): TikTok sends the same artwork twice for some
+		// badges — a BADGEDISPLAYTYPE_IMAGE entry with no label, plus a
+		// BADGEDISPLAYTYPE_COMBINE entry carrying the label ("No. 3" for Top
+		// Gifter). Rendering both drew a duplicated icon, and the labelled one
+		// looked blank before the text-label fix above. Collapse entries that
+		// share an image, keeping the one that actually has a label.
+		badges = dedupeBadges(badges)
 		user.Badge = &BadgeAttributes{
 			Badges: badges,
 		}
 	}
 	return &user
+}
+
+// dedupeBadges collapses badges that share the same image URL, preferring the
+// entry that carries a label and a colour. Order of first appearance is kept so
+// the payload's badge ordering (grade first, then Top Gifter) survives.
+func dedupeBadges(in []*UserBadge) []*UserBadge {
+	if len(in) < 2 {
+		return in
+	}
+	index := make(map[string]int, len(in))
+	out := make([]*UserBadge, 0, len(in))
+	for _, b := range in {
+		if b == nil {
+			continue
+		}
+		if b.Image == "" {
+			out = append(out, b)
+			continue
+		}
+		if i, ok := index[b.Image]; ok {
+			// Keep whichever entry is richer.
+			if out[i].Name == "" && b.Name != "" {
+				out[i].Name = b.Name
+			}
+			if out[i].Color == "" && b.Color != "" {
+				out[i].Color = b.Color
+			}
+			continue
+		}
+		index[b.Image] = len(out)
+		out = append(out, b)
+	}
+	return out
 }
 
 func toUserIdentity(uid *pb.UserIdentity) *UserIdentity {

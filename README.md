@@ -99,7 +99,11 @@ the source:
   sends `avatarThumb`, so the guard failed and `ProfilePicture` was always
   empty. We now pick the largest image actually present.
 - **User badges** — badges were exposed as a raw protobuf dump with no image
-  URL. We expose `{image, name, color}` in the shape TikFinity emits.
+  URL. We expose `{image, name, color}` in the shape TikFinity emits. Two extra
+  fixes: the label lives in a `TextBadge` field the vendored `.proto` does not
+  declare (field 2, e.g. "No. 3"), so we read it from the unknown bytes; and
+  TikTok sends some artwork twice (an IMAGE entry plus a labelled COMBINE
+  entry), which drew a doubled badge, so identical images are collapsed.
 - **Gift images** — `GiftEvent` had no image field, so `giftPictureUrl` was
   hardcoded empty. We surface `image > icon > giftLabelIcon`.
 
