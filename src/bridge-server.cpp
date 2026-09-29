@@ -6,7 +6,7 @@
  *   - HTTP       GET /health             — liveness probe
  *   - HTTP       GET /now-playing        — legacy SMTC-Bridge compatible payload
  *   - HTTP       GET /artwork/<app_id>   — cached cover art (?v=<version>)
- *   - HTTP       GET /  + POST /config   — browser-based settings page
+ *   - HTTP       GET /sessions           — Active Audio Sources page
  *
  * The SMTC half replaces the old Python "SMTC Bridge" tray app: we poll
  * geseki::smtc (WinRT) on a worker thread, diff the snapshot, and push a
@@ -961,80 +961,32 @@ std::string ContentTypeForImage(const std::vector<uint8_t> &bytes)
 	return "application/octet-stream";
 }
 
-// Renders the Active Audio Sources page: an HTML view of every Windows media
-// session the bridge can see. The page fetches /now-playing and re-renders once
-// a second, so it stays live without the server pushing anything. This is the
-// geseki-bridge equivalent of the old SMTC Bridge /sessions page.
+// The Active Audio Sources page, matching the old SMTC Bridge /sessions page:
+// a plain list of the app ids (source_app_user_model_id) of every active media
+// session. Kept deliberately identical in content and markup.
 std::string SessionsPage()
 {
-	return R"HTML(<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Geseki Bridge — Active Audio Sources</title>
-<style>
- :root{color-scheme:dark}
- body{font:14px/1.5 system-ui,Segoe UI,sans-serif;margin:0;background:#16181d;color:#e6e6e6}
- header{padding:20px 24px 6px}
- h1{font-size:19px;margin:0 0 4px}
- .sub{color:#9aa3b2;font-size:12px}
- main{padding:8px 24px 32px;display:grid;gap:12px}
- .card{background:#1d2026;border:1px solid #2c313a;border-radius:10px;padding:14px 16px}
- .card.active{border-color:#3f7d5a}
- .row{display:flex;gap:12px;align-items:flex-start}
- .thumb{width:56px;height:56px;border-radius:8px;object-fit:cover;background:#2c313a;flex:0 0 auto}
- .meta{min-width:0;flex:1}
- .title{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
- .artist{color:#c3cad6;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
- .app{color:#7f8a9c;font-size:12px;margin-top:2px;word-break:break-all}
- .badge{display:inline-block;font-size:11px;padding:2px 8px;border-radius:999px;background:#2c313a;color:#c3cad6;white-space:nowrap}
- .badge.playing{background:#24483a;color:#7fe0b0}
- .bar{height:4px;background:#2c313a;border-radius:2px;margin-top:10px;overflow:hidden}
- .bar>i{display:block;height:100%;background:#3f7d5a;width:0}
- .empty{color:#9aa3b2;padding:24px;text-align:center;border:1px dashed #2c313a;border-radius:10px}
- .time{color:#7f8a9c;font-size:12px;margin-top:6px;font-variant-numeric:tabular-nums}
-</style>
-</head>
-<body>
-<header>
- <h1>Active Audio Sources</h1>
- <div class="sub">Geseki Bridge &middot; <span id="count">0</span> session(s) &middot; <span id="cur"></span></div>
-</header>
-<main id="list"><div class="empty">Loading&hellip;</div></main>
-<script>
-var STATUS=["Closed","Opened","Changing","Stopped","Playing","Paused"];
-function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c];});}
-function fmt(ms){ms=Math.max(0,ms|0);var s=Math.floor(ms/1000);var m=Math.floor(s/60);var r=s%60;return m+":"+(r<10?"0":"")+r;}
-function card(s){
- var mp=s.media_properties||{}, pi=s.playback_info||{}, tl=s.timeline_properties||{};
- var playing=pi.PlaybackStatus===4;
- var pos=tl.Position||0, end=tl.EndTime||0;
- var pct=end>0?Math.min(100,Math.max(0,(pos/end)*100)):0;
- var img=mp.Thumbnail?'<img class="thumb" src="'+esc(mp.Thumbnail)+'" onerror="this.style.visibility=\'hidden\'">':'<div class="thumb"></div>';
- var title=esc(mp.Title)||"(no title)";
- var artist=esc(mp.Artist)+(mp.AlbumTitle?" &middot; "+esc(mp.AlbumTitle):"");
- return '<div class="card'+(playing?" active":"")+'">'
-  +'<div class="row">'+img+'<div class="meta">'
-  +'<div class="title">'+title+'</div>'
-  +'<div class="artist">'+artist+'</div>'
-  +'<div class="app">'+esc(s.source_app_id)+'</div>'
-  +'</div><span class="badge'+(playing?" playing":"")+'">'+(STATUS[pi.PlaybackStatus]||"?")+'</span></div>'
-  +'<div class="bar"><i style="width:'+pct+'%"></i></div>'
-  +'<div class="time">'+fmt(pos)+' / '+fmt(end)+'</div></div>';
-}
-function tick(){
- fetch("/now-playing",{cache:"no-store"}).then(function(r){return r.json();}).then(function(d){
-  var sessions=d.sessions||[];
-  document.getElementById("count").textContent=sessions.length;
-  document.getElementById("cur").textContent=d.current_session_id?("focused: "+d.current_session_id):"no focused session";
-  document.getElementById("list").innerHTML=sessions.length?sessions.map(card).join(""):'<div class="empty">No active audio sources.</div>';
- }).catch(function(){document.getElementById("list").innerHTML='<div class="empty">Bridge unreachable.</div>';});
-}
-tick(); setInterval(tick,1000);
-</script>
-</body>
-</html>)HTML";
+	std::string apps;
+	{
+		const auto snap = geseki::smtc::Poll();
+		std::set<std::string> seen;
+		for (const auto &s : snap.sessions) {
+			if (!seen.insert(s.source_app_id).second)
+				continue;
+			apps += "<li style='margin-bottom: 8px; font-size: 1.1em;'>" +
+				geseki::json::Escape(s.source_app_id) + "</li>";
+		}
+	}
+
+	std::string html;
+	html += "<body style='background-color: #121212; color: white; "
+		"font-family: sans-serif; padding: 20px;'>";
+	html += "<h3 style='margin-top: 0;'>Active Audio Sources:</h3><ul>";
+	html += apps.empty()
+			? "<li style='color: #888;'>No active audio sources found.</li>"
+			: apps;
+	html += "</ul></body>";
+	return html;
 }
 
 bool HandleWebSocketUpgrade(Socket s, const std::map<std::string, std::string> &headers)

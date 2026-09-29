@@ -29,9 +29,9 @@ first.
 * **Native settings dialog.** The Tools menu opens a Qt dialog inside OBS to
   edit the TikTok username, API key, auto-connect and the port. Qt is linked
   from OBS — nothing Qt is bundled.
-* **Active Audio Sources page.** `http://127.0.0.1:47800/sessions` lists every
-  Windows media session the bridge can see (the old SMTC Bridge `/sessions`
-  page).
+* **Active Audio Sources page.** `http://127.0.0.1:47800/sessions` lists the
+  app ids of every active Windows media session — the same content the old SMTC
+  Bridge `/sessions` page showed.
 
 ## HTTP surface
 
