@@ -1,0 +1,26 @@
+# Build outputs
+build_x64/
+build_macos/
+build_x86_64/
+release/
+bin/
+.deps/
+
+# CMake cache / state
+CMakeCache.txt
+CMakeFiles/
+cmake/.CMakeBuildNumber
+
+# Compiled binaries
+*.exe
+*.dll
+*.pdb
+*.lib
+*.obj
+
+# Editor / OS
+.vs/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

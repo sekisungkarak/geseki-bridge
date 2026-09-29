@@ -1,0 +1,17 @@
+# Normalise line endings in the repository (LF), let the working tree follow the
+# platform. Keeps CI and local checkouts byte-identical.
+* text=auto eol=lf
+
+# Windows batch/PowerShell must keep CRLF to run correctly.
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary assets are never converted.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.exe binary
+*.dll binary
+*.pdb binary
