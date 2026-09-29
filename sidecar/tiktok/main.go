@@ -201,12 +201,39 @@ func withUser(u *gotiktoklive.User, extra map[string]interface{}) map[string]int
 	return out
 }
 
+// emoteList flattens gotiktoklive emotes into the shape the widget renders:
+// {emoteId, emoteImageUrl, placeInComment}. placeInComment is the 0-based index
+// of the placeholder character the emote replaces in the comment text (the same
+// contract TikTok Live Connector exposes). Always returns a (possibly empty)
+// slice so the JSON has "emotes": [] rather than null.
+func emoteList(emotes []gotiktoklive.Emote) []interface{} {
+	out := []interface{}{}
+	for _, e := range emotes {
+		out = append(out, map[string]interface{}{
+			"emoteId":        e.EmoteID,
+			"emoteImageUrl":  e.ImageURL,
+			"placeInComment": e.PlaceInComment,
+			"emoteType":      e.EmoteType,
+			"emotePrivateType": e.PrivateType,
+		})
+	}
+	return out
+}
+
 func handleEvent(ev gotiktoklive.Event) {
 	switch e := ev.(type) {
 
 	case gotiktoklive.ChatEvent:
 		emit(outMsg{Ev: "tiktok", Event: "chat", Data: withUser(e.User, map[string]interface{}{
 			"comment": e.Comment,
+			"emotes":  emoteList(e.Emotes),
+		})})
+
+	case gotiktoklive.EmoteEvent:
+		// A subscriber emote (sticker). TikTok sends no comment text with it,
+		// so widgets render it from the emote artwork alone.
+		emit(outMsg{Ev: "tiktok", Event: "emote", Data: withUser(e.User, map[string]interface{}{
+			"emotes": emoteList(e.Emotes),
 		})})
 
 	case gotiktoklive.GiftEvent:

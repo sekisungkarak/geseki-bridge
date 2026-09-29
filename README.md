@@ -111,9 +111,16 @@ the source:
   entry), which drew a doubled badge, so identical images are collapsed.
 - **Gift images** — `GiftEvent` had no image field, so `giftPictureUrl` was
   hardcoded empty. We surface `image > icon > giftLabelIcon`.
+- **Emotes** — the comment's `emotesList` (inline emotes) and the standalone
+  `WebcastEmoteChatMessage` (subscriber stickers) were never read, so an emote
+  reached the widget as a bare placeholder character. We now emit
+  `{emoteId, emoteImageUrl, placeInComment, emoteType, emotePrivateType}` on
+  `chat`, plus a new `emote` event for standalone subscriber emotes.
+  `placeInComment` is the 0-based index of the placeholder char, matching
+  TikTok Live Connector's contract.
 
-Covered by `sidecar/tiktok/third_party/gotiktoklive/giftpatch_test.go` and
-`badgepatch_test.go`.
+Covered by `sidecar/tiktok/third_party/gotiktoklive/giftpatch_test.go`,
+`badgepatch_test.go` and `emotepatch_test.go`.
 
 ## License
 

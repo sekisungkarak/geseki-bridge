@@ -29,7 +29,12 @@ type ChatEvent struct {
 	Comment      string
 	User         *User
 	UserIdentity *UserIdentity
-	isHistory    bool
+	// PATCH (upstream gap): inline emote data carried by the comment. TikTok
+	// sends a placeholder character in Comment for every emote and puts the
+	// real artwork in Emotes; without this the widget could only ever show the
+	// placeholder. Empty for comments that contain no emote.
+	Emotes    []Emote
+	isHistory bool
 }
 
 func (c ChatEvent) IsHistory() bool {
@@ -38,6 +43,40 @@ func (c ChatEvent) IsHistory() bool {
 
 func (c ChatEvent) CreatedTimestamp() int64 {
 	return c.Timestamp
+}
+
+// Emote is one emote/sticker inside a comment or a standalone subscriber emote.
+// PlaceInComment is the 0-based index of the placeholder character it replaces,
+// matching TikTok Live Connector's `placeInComment` (see their proto comment:
+// "starting at 0, you insert the emote itself into the comment at that place").
+type Emote struct {
+	EmoteID        string
+	ImageURL       string
+	PlaceInComment int
+	// EmoteType: 0 NORMAL, 1 WITHSTICKER. PrivateType: 0 NORMAL, 1 SUB_WAVE
+	// (the latter is how a subscriber emote is flagged).
+	EmoteType   int
+	PrivateType int
+}
+
+// EmoteEvent is a standalone subscriber emote (WebcastEmoteChatMessage). It is
+// NOT a chat message: it carries no comment text, only emote artwork, so it
+// needs its own event for widgets to render it.
+type EmoteEvent struct {
+	MessageID    int64
+	Timestamp    int64
+	User         *User
+	UserIdentity *UserIdentity
+	Emotes       []Emote
+	isHistory    bool
+}
+
+func (e EmoteEvent) IsHistory() bool {
+	return e.isHistory
+}
+
+func (e EmoteEvent) CreatedTimestamp() int64 {
+	return e.Timestamp
 }
 
 type userEventType string

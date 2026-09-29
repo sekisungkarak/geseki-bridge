@@ -87,7 +87,8 @@ A TikTok LIVE event, normalised to the shape the widgets already understand.
 
 | `event`   | Meaning                        | Extra keys on `data` |
 | --------- | ------------------------------ | -------------------- |
-| `chat`    | a viewer posted a comment      | `comment` |
+| `chat`    | a viewer posted a comment      | `comment`, `emotes` |
+| `emote`   | a subscriber sent an emote (sticker) | `emotes` |
 | `gift`    | a gift was sent                | `giftName`, `giftPictureUrl`, `repeatCount`, `repeatEnd`, `giftType` |
 | `follow`  | a viewer followed              | — |
 | `share`   | a viewer shared the stream     | — |
@@ -112,6 +113,34 @@ A TikTok LIVE event, normalised to the shape the widgets already understand.
 ```json
 { "image": "https://…png", "name": "Top Gifter", "color": "#ffcc00" }
 ```
+
+### 2.3.1 `emotes`
+
+Both `chat` (a comment that contains emotes) and `emote` (a subscriber
+sticker, sent as its own event with no comment text) carry an `emotes` array,
+flattened to the shape the widget renders:
+
+```json
+{
+  "emoteId": "7089",
+  "emoteImageUrl": "https://…png",
+  "placeInComment": 4,
+  "emoteType": 0,
+  "emotePrivateType": 1
+}
+```
+
+* `placeInComment` is the **0-based** index of the placeholder character the
+  emote replaces inside `comment` (same contract as TikTok Live Connector).
+  TikTok sends one placeholder char per emote; the widget swaps it for the
+  image at that index. Absent for the standalone `emote` event.
+* `emotePrivateType`: `0` normal, `1` subscriber wave (`SUB_WAVE`) — how a
+  subscriber emote is flagged.
+* The array is always present (possibly empty) on `chat`; widgets that ignore
+  it render the placeholder character as before.
+
+TikFinity never surfaced this data (its `emotes` array is always empty), so a
+subscriber emote used to reach the widgets as a bare placeholder glyph.
 
 ### 2.4 `nowplaying`
 

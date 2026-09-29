@@ -119,7 +119,18 @@ func parseMsg(msg *pb.WebcastResponse_Message, warnHandler func(...interface{}),
 			Comment:      pt.Content,
 			User:         toUser(pt.User),
 			UserIdentity: toUserIdentity(pt.UserIdentity),
+			Emotes:       toEmotes(pt.EmotesList),
 			Timestamp:    pt.Common.CreateTime,
+			isHistory:    msg.IsHistory || cachedHistory(pt.Common.MsgId),
+		}, nil
+	case *pb.WebcastEmoteChatMessage:
+		// A standalone subscriber emote: no comment text, just artwork.
+		return EmoteEvent{
+			MessageID:    pt.Common.MsgId,
+			Timestamp:    pt.Common.CreateTime,
+			User:         toUser(pt.User),
+			UserIdentity: toUserIdentity(pt.UserIdentity),
+			Emotes:       toEmoteList(pt.EmoteList),
 			isHistory:    msg.IsHistory || cachedHistory(pt.Common.MsgId),
 		}, nil
 	case *pb.WebcastMemberMessage:
@@ -474,6 +485,57 @@ func toUser(u *pb.User) *User {
 		}
 	}
 	return &user
+}
+
+// toEmotes flattens the comment's inline emotes. TikTok puts a placeholder
+// character in the comment text for each emote and stores the artwork here; the
+// index is 0-based (TikTok Live Connector: "placeInComment ... starting at 0").
+func toEmotes(list []*pb.WebcastChatMessage_EmoteWithIndex) []Emote {
+	if len(list) == 0 {
+		return nil
+	}
+	out := make([]Emote, 0, len(list))
+	for _, e := range list {
+		if e == nil {
+			continue
+		}
+		em := toEmote(e.GetEmote())
+		em.PlaceInComment = int(e.GetIndex())
+		out = append(out, em)
+	}
+	return out
+}
+
+// toEmoteList flattens a standalone subscriber emote list (no comment index).
+func toEmoteList(list []*pb.Emote) []Emote {
+	if len(list) == 0 {
+		return nil
+	}
+	out := make([]Emote, 0, len(list))
+	for _, e := range list {
+		if e == nil {
+			continue
+		}
+		out = append(out, toEmote(e))
+	}
+	return out
+}
+
+// toEmote maps the protobuf Emote to the flattened event shape, picking the
+// largest image URL that actually exists (same reasoning as the avatar fix).
+func toEmote(e *pb.Emote) Emote {
+	if e == nil {
+		return Emote{}
+	}
+	em := Emote{
+		EmoteID:    e.GetEmoteId(),
+		EmoteType:  int(e.GetEmoteType()),
+		PrivateType: int(e.GetEmotePrivateType()),
+	}
+	if img := e.GetImage(); img != nil && len(img.UrlList) > 0 {
+		em.ImageURL = img.UrlList[len(img.UrlList)-1]
+	}
+	return em
 }
 
 // dedupeBadges collapses badges that share the same image URL, preferring the
