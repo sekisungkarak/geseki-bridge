@@ -35,6 +35,12 @@ jobs:
           go build -trimpath -ldflags "-s -w" -o ../../bin/geseki-bridge-tiktok.exe .
           Get-Item ../../bin/geseki-bridge-tiktok.exe | Format-List Name, Length
 
+      - name: Test vendored TikTok patches
+        # Regression guard for our local gotiktoklive patches (avatar, badge,
+        # gift image). It is a nested module, so run tests from inside it.
+        working-directory: sidecar/tiktok/third_party/gotiktoklive
+        run: go test ./... -v
+
       - name: Configure plugin
         # The CMake project fetches the OBS sources + prebuilt deps declared in
         # buildspec.json on first configure, so this step is slow but self-contained.

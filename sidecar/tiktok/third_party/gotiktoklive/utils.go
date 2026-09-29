@@ -166,6 +166,17 @@ func parseMsg(msg *pb.WebcastResponse_Message, warnHandler func(...interface{}),
 			return nil, nil
 		}
 
+		// PATCH (upstream gap): surface the gift image. Prefer the largest
+		// artwork (image > icon > giftLabelIcon); TikFinity exposes the same
+		// value as giftPictureUrl.
+		giftPic := ""
+		for _, img := range []*pb.Image{pt.Gift.GetImage(), pt.Gift.GetIcon(), pt.Gift.GetGiftLabelIcon()} {
+			if img != nil && len(img.UrlList) > 0 {
+				giftPic = img.UrlList[len(img.UrlList)-1]
+				break
+			}
+		}
+
 		return GiftEvent{
 			MessageID:    pt.Common.MsgId,
 			Timestamp:    pt.Common.CreateTime,
@@ -177,11 +188,12 @@ func parseMsg(msg *pb.WebcastResponse_Message, warnHandler func(...interface{}),
 			RepeatCount:  int(pt.RepeatCount),
 			RepeatEnd:    pt.RepeatEnd == 1,
 			Type:         int(pt.Gift.Type),
-			ToUserID:     int64(pt.UserGiftReciever.UserId),
+			ToUserID:     toRecipientID(pt.UserGiftReciever),
 			User:         toUser(pt.User),
 			UserIdentity: toUserIdentity(pt.UserIdentity),
 			isHistory:    msg.IsHistory || cachedHistory(pt.Common.MsgId),
 			IsComboGift:  pt.GroupId != 0,
+			PictureURL:   giftPic,
 		}, nil
 	case *pb.WebcastLikeMessage:
 		return LikeEvent{
@@ -314,6 +326,13 @@ func defaultLogHandler(i ...interface{}) {
 
 func routineErrHandler(err ...interface{}) {
 	slog.Debug(fmt.Sprint(err...), "logger", "gotiktoklive-default")
+}
+
+func toRecipientID(r *pb.WebcastGiftMessage_UserGiftReciever) int64 {
+	if r == nil {
+		return 0
+	}
+	return int64(r.UserId)
 }
 
 func toUser(u *pb.User) *User {

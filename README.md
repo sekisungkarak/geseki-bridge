@@ -88,6 +88,23 @@ src/tiktok-supervisor.*     sidecar process supervisor (pipes, no window)
 sidecar/tiktok/             Go sidecar wrapping gotiktoklive
 ```
 
+## Vendored dependency
+
+`gotiktoklive` is **vendored** under `sidecar/tiktok/third_party/gotiktoklive`
+(wired via a `replace` directive in `go.mod`) because upstream does not surface
+data the widget needs. Our local patches, each marked `PATCH (upstream gap)` in
+the source:
+
+- **User avatars** — upstream checked `avatarLarge` but read `avatarJpg`; TikTok
+  sends `avatarThumb`, so the guard failed and `ProfilePicture` was always
+  empty. We now pick the largest image actually present.
+- **User badges** — badges were exposed as a raw protobuf dump with no image
+  URL. We expose `{image, name, color}` in the shape TikFinity emits.
+- **Gift images** — `GiftEvent` had no image field, so `giftPictureUrl` was
+  hardcoded empty. We surface `image > icon > giftLabelIcon`.
+
+Covered by `sidecar/tiktok/third_party/gotiktoklive/giftpatch_test.go`.
+
 ## License
 
 GPL-2.0-or-later (see [`LICENSE`](LICENSE)) — the same license OBS itself uses,

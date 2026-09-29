@@ -215,7 +215,7 @@ func handleEvent(ev gotiktoklive.Event) {
 		// every frame is forwarded rather than collapsing them here.
 		emit(outMsg{Ev: "tiktok", Event: "gift", Data: withUser(e.User, map[string]interface{}{
 			"giftName":       e.Name,
-			"giftPictureUrl": "", // not exposed by gotiktoklive; widget falls back to its own icon
+			"giftPictureUrl": e.PictureURL,
 			"repeatCount":    e.RepeatCount,
 			"repeatEnd":      e.RepeatEnd,
 			"giftType":       e.Type,

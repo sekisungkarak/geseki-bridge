@@ -99,6 +99,10 @@ type GiftEvent struct {
 	isHistory    bool
 	GroupID      int64
 	IsComboGift  bool
+	// PATCH (upstream gap): the gift's image was parsed by the protobuf layer
+	// but never surfaced on the event, so every consumer had to hardcode an
+	// empty giftPictureUrl. Mirror TikFinity, which sends giftPictureUrl.
+	PictureURL string
 }
 
 func (g GiftEvent) CreatedTimestamp() int64 {
