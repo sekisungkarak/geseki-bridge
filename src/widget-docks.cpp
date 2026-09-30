@@ -3,24 +3,27 @@
  *
  *   Tools > Geseki > Geseki Bridge…                        (settings dialog)
  *
- * OBS lets a plugin register a browser dock only by writing an entry into the
- * list it reads at startup (`[BasicWindow] ExtraBrowserDocks` in the user
- * config); its CEF widget is not exported, so a plugin cannot build a browser
- * panel itself. This plugin therefore keeps that entry present: the dock exists
- * on every start without the user having to add it by hand, and OBS's own Docks
- * menu (View > Docks) lists it alongside every other dock. There is no
- * plugin-owned show/hide menu — OBS already provides one.
+ * The dock is a CEF panel built by obs-browser and handed to OBS with
+ * obs_frontend_add_dock_by_id(). That is the difference that matters here: a
+ * dock registered this way belongs to the plugin, so OBS lists it in its own
+ * Docks menu but never in the user's "Custom Browser Docks" list — it cannot be
+ * deleted from the UI, only hidden (the X button) and shown again from Docks.
  *
- * The plugin still owns the dock's initial visibility, because OBS creates a
- * new dock visible and that is what covered the scene:
+ * The earlier approach wrote an entry into `[BasicWindow] ExtraBrowserDocks`,
+ * the same list the "Custom Browser Docks" dialog edits. That made the dock
+ * deletable, so that entry is migrated away on load (RemoveLegacyEntry).
+ *
+ * Visibility is the plugin's own choice, because OBS restores its saved dock
+ * layout *before* the plugin adds this dock, so the layout never carries it:
  *
  *  - `[GesekiBridge] DockVisible` holds the user's choice and defaults to
- *    false, so a fresh install starts with the dock hidden.
+ *    false, so a fresh install starts with the dock hidden (a visible dock
+ *    would cover the scene).
  *  - It is applied on the next event-loop turn, not inside the
  *    FINISHED_LOADING callback: OBS is still finishing its own window and dock
  *    setup at that point, and a setVisible() from there does not stick.
- *  - Every later change — OBS's own Docks menu, the dock's X button — is
- *    written back through visibilityChanged, so the choice survives a restart.
+ *  - Every later change — OBS's Docks menu, the dock's X button — is written
+ *    back through visibilityChanged, so the choice survives a restart.
  */
 #include "widget-docks.hpp"
 
@@ -31,6 +34,7 @@
 #include <string>
 
 #include "json-util.hpp"
+#include "obs-browser.hpp"
 #include "plugin-support.hpp"
 
 #ifdef GESEKI_HAS_QT
@@ -38,6 +42,7 @@
 #include <QDockWidget>
 #include <QMainWindow>
 #include <QMenu>
+#include <QPointer>
 #include <QTimer>
 
 #include "settings-dialog.hpp"
@@ -47,84 +52,64 @@ namespace geseki::docks {
 
 namespace {
 
-// Title of the dock. OBS derives its object name from this as title + "_extraBrowser".
+// Dock id and title. The id is fixed so repeated runs reuse one identity, and
+// OBS rejects a second dock that claims the same object name.
+constexpr const char *kDockId = "gesekiDynamicIslandAlertDock";
 constexpr const char *kDockTitle = "Dynamic Island Alert";
 constexpr const char *kDockUrl = "https://sekisungkarak.web.id/dynamic-island-alert/dashboard/";
 
-// Fixed id, so repeated runs reuse one identity instead of piling up docks.
-constexpr const char *kDockUuid = "9f2c7a41b6e54d0f8a3c1d5e7b904f26";
+// Default dock size. OBS creates a plugin dock with no size of its own and a
+// CEF panel's sizeHint is tiny, so without this the dock opens too small to use.
+constexpr int kDockWidth = 550;
+constexpr int kDockHeight = 900;
 
 // Where the user's show/hide choice is stored. Absent means hidden.
 constexpr const char *kSection = "GesekiBridge";
 constexpr const char *kVisibleKey = "DockVisible";
 
-json::Value MakeString(const std::string &text)
-{
-	json::Value v;
-	v.type = json::Value::Type::String;
-	v.text = text;
-	return v;
-}
-
-// True when `list` already holds an object whose "title" is kDockTitle.
-bool ListHasDock(const json::Value &list)
-{
-	if (list.type != json::Value::Type::Array)
-		return false;
-
-	for (const json::Value &item : list.items) {
-		const json::Value *title = item.find("title");
-		if (title && title->as_string() == kDockTitle)
-			return true;
-	}
-	return false;
-}
-
-// Reads ExtraBrowserDocks. Returns false only when the value is present but
-// malformed — the caller must then leave the user's data alone.
-bool ReadDockList(config_t *config, json::Value &out)
-{
-	const char *raw = config_get_string(config, "BasicWindow", "ExtraBrowserDocks");
-	if (!raw || !*raw)
-		return true; // absent: treat as an empty list
-
-	std::string error;
-	if (!json::Value::Parse(raw, out, &error)) {
-		obs_log(LOG_WARNING, "ExtraBrowserDocks is not valid JSON (%s); not touching it",
-			error.c_str());
-		return false;
-	}
-	return true;
-}
-
-// Adds the dock entry when it is missing, leaving existing entries untouched.
-void EnsureEntry()
+// Drops every entry whose "title" is kDockTitle, so the dock no longer appears
+// in the user's Custom Browser Docks list (where it could be deleted). Leaves
+// the rest of the user's entries untouched.
+void RemoveLegacyEntry()
 {
 	config_t *config = obs_frontend_get_user_config();
-	if (!config) {
-		obs_log(LOG_WARNING, "no user config; cannot register the widget dock");
+	if (!config)
 		return;
-	}
+
+	const char *raw = config_get_string(config, "BasicWindow", "ExtraBrowserDocks");
+	if (!raw || !*raw)
+		return;
 
 	json::Value list;
-	if (!ReadDockList(config, list))
+	std::string error;
+	if (!json::Value::Parse(raw, list, &error)) {
+		obs_log(LOG_WARNING, "ExtraBrowserDocks is not valid JSON (%s); leaving it alone",
+			error.c_str());
+		return;
+	}
+	if (list.type != json::Value::Type::Array)
 		return;
 
-	if (ListHasDock(list))
+	json::Value kept;
+	kept.type = json::Value::Type::Array;
+	bool removed = false;
+	for (const json::Value &item : list.items) {
+		const json::Value *title = item.find("title");
+		if (title && title->as_string() == kDockTitle) {
+			removed = true;
+			continue;
+		}
+		kept.items.push_back(item);
+	}
+
+	if (!removed)
 		return;
 
-	json::Value entry;
-	entry.type = json::Value::Type::Object;
-	entry.members.push_back(std::make_pair(std::string("title"), MakeString(kDockTitle)));
-	entry.members.push_back(std::make_pair(std::string("url"), MakeString(kDockUrl)));
-	entry.members.push_back(std::make_pair(std::string("uuid"), MakeString(kDockUuid)));
-	list.items.push_back(entry);
-
-	const std::string serialized = json::Serialize(list);
+	const std::string serialized = json::Serialize(kept);
 	config_set_string(config, "BasicWindow", "ExtraBrowserDocks", serialized.c_str());
 	config_save(config);
 
-	obs_log(LOG_INFO, "registered widget dock '%s'", kDockTitle);
+	obs_log(LOG_INFO, "removed legacy Custom Browser Dock entry '%s'", kDockTitle);
 }
 
 // The user's stored choice; hidden unless they turned it on.
@@ -146,34 +131,44 @@ void SaveDockVisiblePref(bool visible)
 
 #ifdef GESEKI_HAS_QT
 
-QDockWidget *g_dock = nullptr;
-
-// The dock OBS created for us, or nullptr when there is none.
-QDockWidget *FindDock()
-{
-	auto *window = static_cast<QMainWindow *>(obs_frontend_get_main_window());
-	if (!window)
-		return nullptr;
-
-	const QString object_name = QString(kDockTitle) + "_extraBrowser";
-	return window->findChild<QDockWidget *>(object_name);
-}
+QPointer<QDockWidget> g_dock;
 
 void OnFrontendEvent(enum obs_frontend_event event, void * /*data*/)
 {
-	// OBS builds the dock during OBSBasic::OBSInit, before this event fires.
+	// The frontend exists by now: the main window is up and the browser panel
+	// is available, so the dock can be created.
 	if (event != OBS_FRONTEND_EVENT_FINISHED_LOADING)
 		return;
 
-	g_dock = FindDock();
+	if (g_dock)
+		return;
+
+	QCef *cef = geseki::browser::Panel();
+	if (!cef) {
+		obs_log(LOG_WARNING, "obs-browser is unavailable; the widget dock was not created");
+		return;
+	}
+
+	QWidget *browser = cef->create_widget(nullptr, kDockUrl);
+	if (!browser) {
+		obs_log(LOG_WARNING, "could not create the widget browser panel");
+		return;
+	}
+
+	// A plugin-owned dock: OBS gives it a Docks menu entry and a close button,
+	// but it is not one of the user's Custom Browser Docks, so the Custom
+	// Browser Docks dialog cannot delete it.
+	if (!obs_frontend_add_dock_by_id(kDockId, kDockTitle, browser)) {
+		obs_log(LOG_WARNING, "could not register the widget dock");
+		return;
+	}
+
+	auto *window = static_cast<QMainWindow *>(obs_frontend_get_main_window());
+	g_dock = window ? window->findChild<QDockWidget *>(QString::fromUtf8(kDockId)) : nullptr;
 	if (!g_dock) {
 		obs_log(LOG_WARNING, "widget dock '%s' was not created by OBS", kDockTitle);
 		return;
 	}
-
-	// Deleting the dock from OBS's Custom Browser Docks dialog nulls our
-	// pointer, so the visibility callback below cannot touch a deleted dock.
-	QObject::connect(g_dock, &QObject::destroyed, g_dock, [] { g_dock = nullptr; });
 
 	// Apply the stored choice once OBS has finished its own startup work, then
 	// start tracking changes so the choice survives the next restart.
@@ -181,6 +176,10 @@ void OnFrontendEvent(enum obs_frontend_event event, void * /*data*/)
 	QTimer::singleShot(0, g_dock, [want] {
 		if (!g_dock)
 			return;
+
+		// OBS gives a plugin dock no size of its own and a CEF panel reports a
+		// tiny sizeHint, so it would otherwise open too small to use.
+		g_dock->resize(kDockWidth, kDockHeight);
 
 		g_dock->setVisible(want);
 
@@ -202,7 +201,9 @@ void OpenSettings()
 
 void Setup()
 {
-	EnsureEntry();
+	// The dock used to be a Custom Browser Dock; drop that entry so it stops
+	// showing up in the dialog that could delete it.
+	RemoveLegacyEntry();
 
 #ifdef GESEKI_HAS_QT
 	auto *root_action = static_cast<QAction *>(
