@@ -448,13 +448,16 @@ std::string BuildHello()
 std::string BuildStatus()
 {
 	std::lock_guard<std::mutex> lk(g_status_mu);
+	const bool smtc = g_smtc_available.load();
 	return std::string("{\"type\":\"status\",\"tiktok\":{\"state\":\"") +
 	       geseki::json::Escape(g_tiktok_state) + "\",\"username\":\"" +
 	       geseki::json::Escape(g_tiktok_username) + "\",\"message\":\"" +
 	       geseki::json::Escape(g_tiktok_message) +
-	       "\"},\"nowplaying\":{\"state\":\"" +
-	       (g_smtc_available.load() ? "connected" : "off") +
-	       "\",\"message\":\"\"}}";
+	       "\"},\"nowplaying\":{\"state\":\"" + (smtc ? "connected" : "off") +
+	       // Say WHY the subsystem is off instead of always sending "": a
+	       // widget can show "media control unavailable" rather than guessing.
+	       "\",\"message\":\"" +
+	       (smtc ? "" : "media control unavailable on this machine") + "\"}}";
 }
 
 // ------------------------------------------------------------------- clients

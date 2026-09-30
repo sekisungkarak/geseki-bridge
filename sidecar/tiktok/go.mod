@@ -2,7 +2,10 @@ module github.com/sekisungkarak/geseki-bridge/sidecar/tiktok
 
 go 1.23.0
 
-require github.com/steampoweredtaco/gotiktoklive v0.0.4
+require (
+	github.com/steampoweredtaco/gotiktoklive v0.0.4
+	google.golang.org/protobuf v1.33.0
+)
 
 require (
 	github.com/benbjohnson/clock v1.3.0 // indirect
@@ -14,7 +17,6 @@ require (
 	go.uber.org/ratelimit v0.3.1 // indirect
 	golang.org/x/net v0.25.0 // indirect
 	golang.org/x/sys v0.20.0 // indirect
-	google.golang.org/protobuf v1.33.0 // indirect
 )
 
 // Vendored so we can patch upstream bugs that are still unfixed there:

@@ -11,11 +11,13 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	gotiktoklive "github.com/steampoweredtaco/gotiktoklive"
 )
@@ -103,8 +105,6 @@ func handleConnect(c connectCmd) {
 		return
 	}
 
-	emitState("connecting", "")
-
 	opts := []gotiktoklive.TikTokLiveOption{}
 	if c.APIKey != "" {
 		opts = append(opts, gotiktoklive.SigningApiKey(c.APIKey))
@@ -122,13 +122,52 @@ func handleConnect(c connectCmd) {
 	ctx, cancel := context.WithCancel(context.Background())
 	setSession(nil, cancel)
 
-	go func() {
+	go runSession(ctx, cancel, tt, username)
+}
+
+// Reconnect policy. A dropped WebSocket (network blip, TikTok closing the
+// socket, an expired cursor) used to end the session for good: the sidecar
+// process stays alive, so the plugin's supervisor never restarted it and the
+// widget sat silent until the user reconnected by hand. We now retry with
+// exponential backoff and give up only when TikTok says the room is gone.
+const (
+	reconnectBaseDelay = 2 * time.Second
+	reconnectMaxDelay  = 30 * time.Second
+	// A session that stayed up at least this long is considered healthy, so the
+	// next drop restarts the backoff from the base instead of climbing further.
+	reconnectHealthyAfter = 30 * time.Second
+)
+
+// runSession tracks the room and reconnects when the socket drops. It returns
+// when the context is cancelled (a new connect, a disconnect, or quit) or when
+// the stream has genuinely ended.
+func runSession(ctx context.Context, cancel context.CancelFunc, tt *gotiktoklive.TikTok, username string) {
+	delay := reconnectBaseDelay
+	first := true
+
+	for {
+		if first {
+			emitState("connecting", "")
+			first = false
+		}
+
+		started := time.Now()
 		l, err := tt.TrackUser(username)
 		if err != nil {
-			emitState("error", "track: "+err.Error())
-			cancel()
-			return
+			if terminalTrackError(err) {
+				// The room is gone (stream ended) or the handle is wrong:
+				// there is nothing useful to retry.
+				emitState("off", err.Error())
+				return
+			}
+			logf("track failed: %v (retry in %s)", err, delay)
+			if !sleepBackoff(ctx, &delay) {
+				return
+			}
+			emitState("connecting", "reconnecting")
+			continue
 		}
+
 		setSession(l, cancel)
 		emitState("connected", "")
 
@@ -141,19 +180,72 @@ func handleConnect(c connectCmd) {
 			}})
 		}
 
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case ev, ok := <-l.Events:
-				if !ok {
-					emitState("off", "stream ended")
-					return
-				}
-				handleEvent(ev)
-			}
+		// pumpEvents returns true when the context ended (stop for good), false
+		// when the socket closed (reconnect).
+		if pumpEvents(ctx, l) {
+			return
 		}
-	}()
+
+		// The socket dropped. Reset the backoff if the session ran healthily,
+		// so a long-lived session that blips once reconnects quickly.
+		if time.Since(started) >= reconnectHealthyAfter {
+			delay = reconnectBaseDelay
+		}
+		logf("connection lost after %s, reconnecting in %s", time.Since(started).Round(time.Second), delay)
+		if !sleepBackoff(ctx, &delay) {
+			return
+		}
+		emitState("connecting", "reconnecting")
+	}
+}
+
+// pumpEvents forwards events until the socket closes or the context is
+// cancelled. It reports whether the caller should stop entirely.
+func pumpEvents(ctx context.Context, l *gotiktoklive.Live) (ctxDone bool) {
+	for {
+		select {
+		case <-ctx.Done():
+			return true
+		case ev, ok := <-l.Events:
+			if !ok {
+				return false
+			}
+			handleEvent(ev)
+		}
+	}
+}
+
+// sleepBackoff waits for the current delay and then advances it via
+// nextBackoff. Returns false when the context was cancelled during the wait.
+func sleepBackoff(ctx context.Context, delay *time.Duration) bool {
+	t := time.NewTimer(*delay)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+	}
+	*delay = nextBackoff(*delay)
+	return true
+}
+
+// nextBackoff doubles the current delay and clamps it to the cap. Split out as a
+// pure function so the growth policy is testable without real sleeping.
+func nextBackoff(cur time.Duration) time.Duration {
+	next := cur * 2
+	if next > reconnectMaxDelay {
+		next = reconnectMaxDelay
+	}
+	return next
+}
+
+// terminalTrackError reports whether a TrackUser failure means "do not retry":
+// the stream ended, or the username does not resolve. Every other error
+// (network, signer, rate limit) is treated as transient.
+func terminalTrackError(err error) bool {
+	return errors.Is(err, gotiktoklive.ErrUserOffline) ||
+		errors.Is(err, gotiktoklive.ErrUserNotFound) ||
+		errors.Is(err, gotiktoklive.ErrUserInfoNotFound)
 }
 
 // ------------------------------------------------------------------- events
@@ -183,13 +275,36 @@ func userMap(u *gotiktoklive.User) map[string]interface{} {
 			})
 		}
 	}
-	return map[string]interface{}{
+	out := map[string]interface{}{
 		"userId":            strconv.FormatInt(u.ID, 10),
 		"uniqueId":          u.Username,
 		"nickname":          u.Nickname,
 		"profilePictureUrl": avatar,
 		"userBadges":        badges,
 	}
+	// Follow role (0 none, 1 follower, 2 friend). The widget's filter reads
+	// followRole >= 1 for the "follower" permission, so forward it too.
+	if u.ExtraAttributes != nil {
+		out["followRole"] = u.ExtraAttributes.FollowRole
+	}
+	// Fan-club membership, shaped like TikFinity's fansClubInfo so the widget's
+	// "User Permissions" filter reads it with no widget-side change.
+	if u.FansClubLevel > 0 || u.FansClubName != "" || u.FanClubBadge != "" {
+		out["fansClubInfo"] = map[string]interface{}{
+			"clubName":  u.FansClubName,
+			"fansLevel": u.FansClubLevel,
+			"isActive":  u.FanClubActive,
+		}
+		// Dormant ("grey badge") members keep their tier but are no longer
+		// members, so the widget's fan-club filter has to see the state.
+		out["fanClubActive"] = u.FanClubActive
+	}
+	// The fan-club badge artwork. TikTok's proto has no badgeSceneType, so this
+	// URL is what tells the widget's fan-club filter apart from a grade badge.
+	if u.FanClubBadge != "" {
+		out["fanClubBadge"] = u.FanClubBadge
+	}
+	return out
 }
 
 // withUser merges the user fields into a per-event map without letting a nil
@@ -200,6 +315,20 @@ func withUser(u *gotiktoklive.User, extra map[string]interface{}) map[string]int
 		out[k] = v
 	}
 	return out
+}
+
+// withIdentity merges the event's UserIdentity flags into a data map. TikTok
+// carries follower/subscriber/moderator per-EVENT (not on User), and upstream
+// dropped them entirely, so a widget could not filter by role. The widget's
+// "User Permissions" filter reads isFollower / isSubscriber / isModerator.
+func withIdentity(m map[string]interface{}, id *gotiktoklive.UserIdentity) map[string]interface{} {
+	if id == nil {
+		return m
+	}
+	m["isFollower"] = id.IsFollower
+	m["isSubscriber"] = id.IsSubscriber
+	m["isModerator"] = id.IsModerator
+	return m
 }
 
 // emoteList flattens gotiktoklive emotes into the shape the widget renders:
@@ -271,10 +400,10 @@ func handleEvent(ev gotiktoklive.Event) {
 	switch e := ev.(type) {
 
 	case gotiktoklive.ChatEvent:
-		emit(outMsg{Ev: "tiktok", Event: "chat", Data: withUser(e.User, map[string]interface{}{
+		emit(outMsg{Ev: "tiktok", Event: "chat", Data: withIdentity(withUser(e.User, map[string]interface{}{
 			"comment": normalizeComment(e.Comment, e.Emotes),
 			"emotes":  emoteList(e.Emotes),
-		})})
+		}), e.UserIdentity)})
 
 	case gotiktoklive.EmoteEvent:
 		// A subscriber emote (sticker). TikTok sends it as its own message with
@@ -284,23 +413,23 @@ func handleEvent(ev gotiktoklive.Event) {
 		// placeInComment, exactly like a real comment that carries emotes. That
 		// way the emote renders with no widget-side change.
 		comment, emotes := standaloneEmoteAsChat(e.Emotes)
-		emit(outMsg{Ev: "tiktok", Event: "chat", Data: withUser(e.User, map[string]interface{}{
+		emit(outMsg{Ev: "tiktok", Event: "chat", Data: withIdentity(withUser(e.User, map[string]interface{}{
 			"comment": comment,
 			"emotes":  emotes,
-		})})
+		}), e.UserIdentity)})
 
 	case gotiktoklive.GiftEvent:
 		// Streakable gifts (Type == 1) arrive many times; the widget already
 		// filters on repeatEnd, and it needs repeatCount to show the total, so
 		// every frame is forwarded rather than collapsing them here.
-		emit(outMsg{Ev: "tiktok", Event: "gift", Data: withUser(e.User, map[string]interface{}{
+		emit(outMsg{Ev: "tiktok", Event: "gift", Data: withIdentity(withUser(e.User, map[string]interface{}{
 			"giftName":       e.Name,
 			"giftPictureUrl": e.PictureURL,
 			"repeatCount":    e.RepeatCount,
 			"repeatEnd":      e.RepeatEnd,
 			"giftType":       e.Type,
 			"giftCost":       e.Diamonds,
-		})})
+		}), e.UserIdentity)})
 
 	case gotiktoklive.UserEvent:
 		// The event kind is an unexported type, so compare against the exported
@@ -312,6 +441,11 @@ func handleEvent(ev gotiktoklive.Event) {
 			emit(outMsg{Ev: "tiktok", Event: "share", Data: userMap(e.User)})
 		case gotiktoklive.USER_JOIN:
 			emit(outMsg{Ev: "tiktok", Event: "join", Data: userMap(e.User)})
+		case gotiktoklive.USER_SUBSCRIBE:
+			// Subscriptions were documented in protocol.md §2.3 but never
+			// emitted: the vendored parser had no case for
+			// WebcastSubNotifyMessage, so the event was dropped.
+			emit(outMsg{Ev: "tiktok", Event: "subscribe", Data: userMap(e.User)})
 		}
 
 	case gotiktoklive.ViewersEvent:

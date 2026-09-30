@@ -82,9 +82,10 @@ func (e EmoteEvent) CreatedTimestamp() int64 {
 type userEventType string
 
 const (
-	USER_JOIN   userEventType = "user joined the stream"
-	USER_SHARE  userEventType = "user shared the stream"
-	USER_FOLLOW userEventType = "user followed the host"
+	USER_JOIN      userEventType = "user joined the stream"
+	USER_SHARE     userEventType = "user shared the stream"
+	USER_FOLLOW    userEventType = "user followed the host"
+	USER_SUBSCRIBE userEventType = "user subscribed to the host"
 )
 
 type UserEvent struct {
@@ -291,6 +292,24 @@ type User struct {
 	ProfilePicture  *ProfilePicture
 	ExtraAttributes *ExtraAttributes
 	Badge           *BadgeAttributes
+	// PATCH (upstream gap): fan-club membership. TikTok carries it on User
+	// (fansClub / fansClubInfo) but upstream dropped it, so a widget could not
+	// tell a fan-club member from a plain viewer. The sidecar forwards it as
+	// fansClubInfo, the same key TikFinity sends.
+	FansClubName  string
+	FansClubLevel int
+	// PATCH (upstream gap): the fan-club badge artwork. TikTok puts it on
+	// User.medal (fansClubInfo.badge as fallback). The sidecar forwards it as
+	// fanClubBadge, and it is also the signal the widget's fan-club filter
+	// keys on when a payload carries no badgeSceneType.
+	FanClubBadge string
+	// PATCH: fan-club dormancy ("grey badge"). TikTok greys the badge and
+	// freezes the privileges once a member stops earning points for 7
+	// consecutive days (FansClubData.userFansClubStatus == INACTIVE, or
+	// FansClubInfo.isSleeping). The widget's fan-club filter treats a
+	// dormant member as a non-member, so the sidecar forwards which of the
+	// two states the badge is in.
+	FanClubActive bool
 }
 
 type UserIdentity struct {

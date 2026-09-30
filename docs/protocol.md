@@ -75,6 +75,18 @@ Sent on connect and whenever a subsystem changes state. Lets a widget show
 
 `state` is one of `off`, `connecting`, `connected`, `error`.
 
+`tiktok.message` carries a human-readable reason when there is one (for example
+`reconnecting` while the sidecar retries a dropped socket, or `stream ended`).
+
+**Reconnect.** The TikTok sidecar reconnects on its own when the live socket
+drops (network blip, TikTok closing the socket, an expired cursor). It retries
+with exponential backoff — 2 s, 4 s, 8 s, 16 s, then 30 s — and reports
+`connecting` / `reconnecting` while it does. A session that stayed up for at
+least 30 s resets the backoff, so a long, healthy session reconnects quickly
+after a single blip. It stops only when TikTok reports the room is gone
+(stream ended) or the handle does not resolve, and then reports `off`. A new
+`tiktok.connect`, a `tiktok.disconnect`, or `quit` cancels a pending retry.
+
 ### 2.3 `tiktok`
 
 A TikTok LIVE event, normalised to the shape the widgets already understand.
@@ -91,10 +103,15 @@ A TikTok LIVE event, normalised to the shape the widgets already understand.
 | `gift`    | a gift was sent                | `giftName`, `giftPictureUrl`, `repeatCount`, `repeatEnd`, `giftType` |
 | `follow`  | a viewer followed              | — |
 | `share`   | a viewer shared the stream     | — |
-| `subscribe` | a viewer subscribed          | — |
+| `subscribe` | a viewer subscribed (new sub or renewal) | — |
 | `like`    | likes were sent                | `likeCount`, `totalLikes` |
 | `roomUser`| viewer count changed           | `viewerCount` |
 | `join`    | a viewer entered the room      | — |
+
+`subscribe` is produced from two TikTok messages: `WebcastSubNotifyMessage` (a
+subscription notice) and `WebcastMemberMessage` with action `SUBSCRIBED`. The
+event is emitted with the common user fields and no extra keys, matching what
+the widgets already render for their subscribe alert.
 
 **Common `data` fields** (present when the source event carries a user):
 

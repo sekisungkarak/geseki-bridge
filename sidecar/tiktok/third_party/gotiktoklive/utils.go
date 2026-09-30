@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
+	"strings"
 	"time"
 
 	"github.com/erni27/imcache"
@@ -138,6 +139,19 @@ func parseMsg(msg *pb.WebcastResponse_Message, warnHandler func(...interface{}),
 			MessageID: pt.Common.MsgId,
 			Timestamp: pt.Common.CreateTime,
 			Event:     toUserType(pt.Action.String()),
+			User:      toUser(pt.User),
+			isHistory: msg.IsHistory || cachedHistory(pt.Common.MsgId),
+		}, nil
+	case *pb.WebcastSubNotifyMessage:
+		// A subscription notice (new sub or renewal). TikTok delivers it as its
+		// own message instead of a WebcastMemberMessage, and upstream had no
+		// case for it, so every subscribe was dropped before it reached a
+		// widget — which already renders a `subscribe` alert. The event was
+		// documented in protocol.md but never produced.
+		return UserEvent{
+			MessageID: pt.Common.MsgId,
+			Timestamp: pt.Common.CreateTime,
+			Event:     USER_SUBSCRIBE,
 			User:      toUser(pt.User),
 			isHistory: msg.IsHistory || cachedHistory(pt.Common.MsgId),
 		}, nil
@@ -440,6 +454,47 @@ func toUser(u *pb.User) *User {
 		FollowRole: int(u.UserRole),
 	}
 
+	// PATCH (upstream gap): surface fan-club membership so the sidecar can
+	// forward it. Prefer FansClub.data (carries club name AND level); fall back
+	// to FansClubInfo.fansLevel, which TikTok still sends when clubName is empty.
+	if fc := u.GetFansClub(); fc != nil && fc.GetData() != nil {
+		user.FansClubName = fc.GetData().GetClubName()
+		user.FansClubLevel = int(fc.GetData().GetLevel())
+	}
+	if fci := u.GetFansClubInfo(); fci != nil && fci.GetFansLevel() > 0 {
+		if user.FansClubLevel == 0 {
+			user.FansClubLevel = int(fci.GetFansLevel())
+		}
+	}
+
+	// PATCH (upstream gap): the fan-club badge artwork. TikTok puts the
+	// member's fan-club medal on User.medal; fansClubInfo.badge carries the
+	// same image when medal is absent. This is the badge the widget's fan-club
+	// filter keys on.
+	if m := u.GetMedal(); m != nil && len(m.UrlList) > 0 {
+		user.FanClubBadge = m.UrlList[len(m.UrlList)-1]
+	}
+	if user.FanClubBadge == "" {
+		if fci := u.GetFansClubInfo(); fci != nil && fci.GetBadge() != nil && len(fci.GetBadge().UrlList) > 0 {
+			user.FanClubBadge = fci.GetBadge().UrlList[len(fci.GetBadge().UrlList)-1]
+		}
+	}
+
+	// PATCH: fan-club dormancy ("grey badge"). Only POSITIVE evidence of
+	// dormancy clears the flag: a payload that omits the status still counts
+	// as an active member, so a live member is never mistaken for a former
+	// one. Set only when the user actually belongs to a club.
+	if user.FansClubLevel > 0 || user.FansClubName != "" || user.FanClubBadge != "" {
+		user.FanClubActive = true
+		if fc := u.GetFansClub(); fc != nil && fc.GetData() != nil &&
+			fc.GetData().GetUserFansClubStatus() == pb.User_FansClub_FansClubData_INACTIVE {
+			user.FanClubActive = false
+		}
+		if fci := u.GetFansClubInfo(); fci != nil && fci.GetIsSleeping() {
+			user.FanClubActive = false
+		}
+	}
+
 	// PATCH (upstream bug, issue #18): upstream stored badge.String(), a
 	// protobuf debug dump, as the badge name, and no image URL at all, so
 	// widgets had nothing renderable. Expose the fields a badge needs:
@@ -469,6 +524,10 @@ func toUser(u *pb.User) *User {
 				b.Name = t.Text.GetDefaultPattern()
 			case *pb.BadgeStruct_Str:
 				b.Name = t.Str.GetStr()
+			}
+			// Fill the scene type the widget filters on, derived from the artwork.
+			if b.SceneType == 0 {
+				b.SceneType = badgeSceneFromURL(b.Image)
 			}
 			badges = append(badges, b)
 		}
@@ -541,6 +600,22 @@ func toEmote(e *pb.Emote) Emote {
 // dedupeBadges collapses badges that share the same image URL, preferring the
 // entry that carries a label and a colour. Order of first appearance is kept so
 // the payload's badge ordering (grade first, then Top Gifter) survives.
+// badgeSceneFromURL derives TikFinity's badgeSceneType from the badge artwork
+// URL. TikTok's proto has no scene field, so without this every badge the
+// bridge forwards carries badgeSceneType 0 and a widget cannot tell a fan-club
+// badge (10) from a grade (8). The artwork filenames are stable.
+func badgeSceneFromURL(url string) int {
+	switch {
+	case strings.Contains(url, "fans_badge_icon"):
+		return 10 // fan club
+	case strings.Contains(url, "grade_badge_icon"):
+		return 8 // grade
+	case strings.Contains(url, "moderater_badge_icon"):
+		return 1 // moderator
+	}
+	return 0
+}
+
 func dedupeBadges(in []*UserBadge) []*UserBadge {
 	if len(in) < 2 {
 		return in
@@ -603,6 +678,12 @@ func toUserType(displayType string) userEventType {
 		return USER_JOIN
 	case "JOINED":
 		return USER_JOIN
+	case "SUBSCRIBED":
+		// MemberMessageAction_SUBSCRIBED.String(): a subscribe that arrives as
+		// a WebcastMemberMessage rather than a WebcastSubNotifyMessage. Without
+		// this it fell through to the "not implemented" fallback and the
+		// sidecar's type switch dropped it.
+		return USER_SUBSCRIBE
 	}
 	return userEventType(fmt.Sprintf("User type not implemented, please report: %s", displayType))
 }
