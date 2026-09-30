@@ -3,6 +3,7 @@ build_x64/
 build_macos/
 build_x86_64/
 release/
+package/
 bin/
 .deps/
 

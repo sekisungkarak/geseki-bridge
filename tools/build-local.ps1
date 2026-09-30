@@ -8,7 +8,8 @@
 # CMake 3.28+ and Go 1.23 on PATH (or set $env:GOROOT).
 param(
   [string]$Install = "",
-  [switch]$SkipSidecar
+  [switch]$SkipSidecar,
+  [switch]$Installer
 )
 
 $ErrorActionPreference = "Stop"
@@ -46,18 +47,38 @@ try {
   Write-Host "== Installing to release\ ==" -ForegroundColor Cyan
   cmake --install build_x64 --prefix release --config RelWithDebInfo
 
-  $dest = "release\geseki-bridge\bin\64bit"
+  $dest = "release\obs-plugins\64bit"
   Copy-Item "bin\geseki-bridge-tiktok.exe" $dest -Force
   Write-Host "Plugin + sidecar in $dest" -ForegroundColor Green
 
   if ($Install) {
     Write-Host "== Installing into $Install ==" -ForegroundColor Cyan
-    Copy-Item "$dest\geseki-bridge.dll"        "$Install\obs-plugins\64bit\" -Force
-    Copy-Item "$dest\geseki-bridge-tiktok.exe" "$Install\obs-plugins\64bit\" -Force
+    # Flat OBS layout: works for both portable and installer OBS because the
+    # archive mirrors the OBS tree (obs-plugins/64bit + data/obs-plugins/...).
+    Copy-Item "release\obs-plugins\64bit\*" "$Install\obs-plugins\64bit\" -Force
     New-Item -ItemType Directory -Force -Path "$Install\data\obs-plugins\geseki-bridge\locale" | Out-Null
-    Copy-Item "release\geseki-bridge\data\locale\en-US.ini" `
+    Copy-Item "release\data\obs-plugins\geseki-bridge\locale\en-US.ini" `
               "$Install\data\obs-plugins\geseki-bridge\locale\" -Force
     Write-Host "Installed into $Install (restart OBS)" -ForegroundColor Green
+  }
+
+  if ($Installer) {
+    Write-Host "== Building Windows installer ==" -ForegroundColor Cyan
+    $iscc = Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe"
+    if (-not (Test-Path $iscc)) { $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" }
+    if (-not (Test-Path $iscc)) {
+      throw "Inno Setup 6 (ISCC.exe) not found. Install it, or skip -Installer."
+    }
+    $version = (Get-Content buildspec.json -Raw | ConvertFrom-Json).version
+    Remove-Item "package" -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force -Path "package" | Out-Null
+    Copy-Item "release\obs-plugins" "package\obs-plugins" -Recurse -Force
+    Copy-Item "release\data" "package\data" -Recurse -Force
+    $env:GESEKI_VERSION = $version
+    & $iscc /Qp installer.iss
+    $exe = "package\geseki-bridge-$version-windows-installer.exe"
+    if (-not (Test-Path $exe)) { throw "Installer compile failed" }
+    Write-Host "Installer: $exe" -ForegroundColor Green
   }
 } finally {
   Pop-Location

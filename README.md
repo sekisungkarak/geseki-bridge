@@ -47,16 +47,53 @@ now-playing widget only needs its port changed to `47800` — no code change.
 
 ## Install
 
-1. Grab the `geseki-bridge-<version>-windows-x64.zip` from
+Two downloads are published for Windows:
+
+| Asset | Use it when |
+| --- | --- |
+| `geseki-bridge-<version>-windows-installer.zip` | **Easiest.** Unzip, run the `.exe`, done — it finds your OBS and copies the files in. |
+| `geseki-bridge-<version>-windows-x64.zip` | Manual install (e.g. a portable OBS you want to keep self-contained). |
+
+### Option A — installer (recommended)
+
+1. Download `geseki-bridge-<version>-windows-installer.zip` and unzip it.
+2. Run `geseki-bridge-<version>-windows-installer.exe`. It auto-detects your
+   OBS folder (the `HKLM\SOFTWARE\OBS Studio` registry value written by the
+   official installer, falling back to `C:\Program Files\obs-studio`) — or
+   browse to a **portable** OBS folder when prompted.
+3. Restart OBS.
+
+### Option B — manual zip
+
+The zip mirrors the OBS folder tree, so there is **no folder to guess** — you
+extract it straight into OBS.
+
+1. Grab `geseki-bridge-<version>-windows-x64.zip` from
    [Releases](../../releases).
-2. Extract `geseki-bridge` into your OBS plugins folder, i.e.
-   `%ALLUSERSPROFILE%\obs-studio\plugins\`.
+2. Extract it into your **OBS install folder** (the one containing
+   `obs64.exe`). The zip contains `obs-plugins/` and `data/`; merging them
+   gives:
+   ```
+   <OBS>\obs-plugins\64bit\geseki-bridge.dll
+   <OBS>\obs-plugins\64bit\geseki-bridge-tiktok.exe
+   <OBS>\data\obs-plugins\geseki-bridge\locale\en-US.ini
+   ```
+   * **Portable OBS:** this is the folder you unzipped OBS into (e.g.
+     `E:\OBS-VERT`).
+   * **Installer OBS:** `C:\Program Files\obs-studio` — copy `obs-plugins\`
+     and `data\` into it and approve the admin prompt.
 3. Restart OBS. A **Geseki Bridge** item appears under *Tools*; it opens a
    dialog to set the TikTok username, API key, auto-connect and the port.
 
+> **Why not `%ProgramData%\obs-studio\plugins`?** OBS *portable* mode ignores
+> that folder entirely (`AddExtraModulePaths()` returns early when
+> `portable_mode` is set), so a plugin dropped there only works for installer
+> OBS. Both options above write into the OBS folder itself, which works for
+> both.
+
 The TikTok sidecar (`geseki-bridge-tiktok.exe`) must sit **next to**
-`geseki-bridge.dll`; the plugin resolves it relative to its own module. The
-release archive is already laid out this way.
+`geseki-bridge.dll`; the plugin resolves it relative to its own module. Both
+the installer and the zip already lay it out this way.
 
 ## Build
 
@@ -77,8 +114,16 @@ cmake --build --preset windows-x64 --config RelWithDebInfo --parallel
 cmake --install build_x64 --prefix release --config RelWithDebInfo
 ```
 
+Or just run the helper, which also installs into a portable OBS and (with
+`-Installer`) builds the Inno Setup `.exe`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\build-local.ps1 -Install E:\OBS-VERT -Installer
+```
+
 CI does all of the above on every tag (`v*`) — see
-[`.github/workflows/release.yml`](.github/workflows/release.yml).
+[`.github/workflows/release.yml`](.github/workflows/release.yml). It publishes
+both the manual zip and the installer.
 
 ## Layout
 

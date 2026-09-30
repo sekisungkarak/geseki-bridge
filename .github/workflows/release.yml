@@ -59,7 +59,7 @@ jobs:
 
       - name: Place sidecar next to the plugin DLL
         run: |
-          $dest = "release/geseki-bridge/bin/64bit"
+          $dest = "release/obs-plugins/64bit"
           Copy-Item "bin/geseki-bridge-tiktok.exe" $dest -Force
           Get-ChildItem -Recurse release | Select-Object FullName
 
@@ -67,18 +67,68 @@ jobs:
         run: |
           $version = (Get-Content buildspec.json -Raw | ConvertFrom-Json).version
           $name = "geseki-bridge-$version-windows-x64"
-          Compress-Archive -Path "release/geseki-bridge" -DestinationPath "$name.zip" -Force
+          # Flat OBS tree (obs-plugins/64bit + data/obs-plugins/...) so the zip
+          # can be extracted straight into an OBS install folder -- portable or
+          # installer. A named bundle would only work for installer OBS via
+          # %ProgramData%\obs-studio\plugins, which portable OBS ignores.
+          Compress-Archive -Path "release/obs-plugins", "release/data" -DestinationPath "$name.zip" -Force
           echo "ASSET=$name.zip" >> $env:GITHUB_ENV
+
+      - name: Build installer
+        run: |
+          # Mirror obs-advanced-masks: ship a friendly one-click .exe alongside
+          # the manual zip. Inno Setup is fetched from its official GitHub
+          # releases mirror and installed silently, then ISCC compiles the
+          # script with the same flat tree the zip uses.
+          $version = (Get-Content buildspec.json -Raw | ConvertFrom-Json).version
+          curl.exe -sL -o innosetup.exe "https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe"
+          Start-Process -FilePath ".\innosetup.exe" -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/SP-","/CURRENTUSER" -Wait
+          New-Item -ItemType Directory -Force -Path "package" | Out-Null
+          Copy-Item "release/obs-plugins" "package/obs-plugins" -Recurse -Force
+          Copy-Item "release/data" "package/data" -Recurse -Force
+          $env:GESEKI_VERSION = $version
+          # Inno Setup 6 installs per-user under LOCALAPPDATA with /CURRENTUSER;
+          # fall back to the machine-wide path if a runner image differs.
+          $iscc = Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" }
+          if (-not (Test-Path $iscc)) { $iscc = "C:\Program Files\Inno Setup 6\ISCC.exe" }
+          if (-not (Test-Path $iscc)) { throw "ISCC.exe not found after installing Inno Setup" }
+          & $iscc /Qp installer.iss
+          if (-not (Test-Path "package/geseki-bridge-$version-windows-installer.exe")) {
+            throw "Installer compile failed"
+          }
+          $installer = "geseki-bridge-$version-windows-installer"
+          Compress-Archive -Path "package/geseki-bridge-$version-windows-installer.exe" -DestinationPath "$installer.zip" -Force
+          echo "INSTALLER=$installer.zip" >> $env:GITHUB_ENV
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: geseki-bridge-windows-x64
-          path: ${{ env.ASSET }}
+          path: |
+            ${{ env.ASSET }}
+            ${{ env.INSTALLER }}
+
+      - name: Detect prerelease
+        run: |
+          # Follows the obs-advanced-masks convention: a plain vX.Y.Z tag is a
+          # stable release; anything else (e.g. v0.1.1a, v0.2.0-alpha.1) is a
+          # prerelease. The action's `prerelease` input defaults to false, so
+          # this must be set explicitly.
+          $tag = "${{ github.ref_name }}"
+          $ver = $tag -replace '^v', ''
+          $isPre = $tag -notmatch '^v\d+\.\d+\.\d+$'
+          $label = if ($isPre) { "Pre-Release" } else { "Release" }
+          echo "PRERELEASE=$($isPre.ToString().ToLower())" >> $env:GITHUB_ENV
+          echo "REL_NAME=$label $ver" >> $env:GITHUB_ENV
 
       - name: Attach to release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ env.ASSET }}
+          name: ${{ env.REL_NAME }}
+          prerelease: ${{ env.PRERELEASE == 'true' }}
+          files: |
+            ${{ env.ASSET }}
+            ${{ env.INSTALLER }}
           generate_release_notes: true
