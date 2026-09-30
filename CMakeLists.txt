@@ -39,6 +39,7 @@ target_sources(
     src/json-util.cpp
     src/smtc-winrt.cpp
     src/tiktok-supervisor.cpp
+    src/widget-docks.cpp
 )
 
 if(ENABLE_QT)
