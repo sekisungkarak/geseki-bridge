@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
+	"strconv"
 	"strings"
 	"time"
 
@@ -154,6 +155,60 @@ func parseMsg(msg *pb.WebcastResponse_Message, warnHandler func(...interface{}),
 			Event:     USER_SUBSCRIBE,
 			User:      toUser(pt.User),
 			isHistory: msg.IsHistory || cachedHistory(pt.Common.MsgId),
+		}, nil
+	case *pb.WebcastBarrageMessage:
+		// Super Fan notices arrive as a barrage ("banner") message. Upstream
+		// had no case for this message at all, so every one was dropped.
+		// TikTok Live Connector identifies them by two markers: content.key and
+		// commonBarrageContent.key. The latter is field 24, which the vendored
+		// descriptor does not declare, so it is read straight off the wire.
+		keys := []string{pt.GetContent().GetKey()}
+		if raw := unknownBytesField(pt.ProtoReflect().GetUnknown(), 24); raw != nil {
+			var t pb.Text
+			if err := proto.Unmarshal(raw, &t); err == nil {
+				keys = append(keys, t.GetKey())
+			}
+		}
+		kind, ok := superFanKindFromKeys(keys)
+		if !ok {
+			// A barrage that is not a Super Fan notice (an ordinary system
+			// banner). There is no widget event for it.
+			return nil, nil
+		}
+		// The sender sits in field 50 (base.user.User), also undeclared here.
+		var user *User
+		if raw := unknownBytesField(pt.ProtoReflect().GetUnknown(), 50); raw != nil {
+			var u pb.User
+			if err := proto.Unmarshal(raw, &u); err == nil {
+				user = toUser(&u)
+			}
+		}
+		return SuperFanEvent{
+			MessageID: pt.GetCommon().GetMsgId(),
+			Timestamp: pt.GetCommon().GetCreateTime(),
+			Event:     kind,
+			User:      user,
+			isHistory: msg.IsHistory || cachedHistory(pt.GetCommon().GetMsgId()),
+		}, nil
+	case *pb.WebcastEnvelopeMessage:
+		// A Super Fan Box is an envelope. The connector matches either the
+		// display-text key or businessType == SUPER_FAN_BOX. That enum value is
+		// 19 and the vendored enums.pb.go stops at 7, so it is compared as a
+		// plain integer (proto3 keeps the numeric value either way).
+		info := pt.GetEnvelopeInfo()
+		isBox := strings.Contains(strings.ToLower(pt.GetCommon().GetDisplayText().GetKey()), "ttlive_superfanbox") ||
+			int32(info.GetBusinessType()) == envelopeBusinessTypeSuperFanBox
+		if !isBox {
+			// Any other envelope (diamonds, portal, …) is not a Super Fan Box.
+			return nil, nil
+		}
+		return SuperFanEvent{
+			MessageID:    pt.GetCommon().GetMsgId(),
+			Timestamp:    pt.GetCommon().GetCreateTime(),
+			Event:        SUPER_FAN_BOX,
+			User:         envelopeUser(info),
+			DiamondCount: int(info.GetDiamondCount()),
+			isHistory:    msg.IsHistory || cachedHistory(pt.GetCommon().GetMsgId()),
 		}, nil
 	case *pb.WebcastLiveGameIntroMessage:
 		return RoomEvent{
@@ -422,6 +477,106 @@ func textBadgeLabelFromUnknown(b []byte) string {
 		}
 	}
 	return ""
+}
+
+// unknownBytesField walks raw protobuf bytes and returns the payload of the
+// first field with the given number, or nil when absent. Unknown bytes are
+// stored verbatim, so a hand-rolled walk is the only way to read a field the
+// vendored descriptor does not declare (used here for WebcastBarrageMessage's
+// commonBarrageContent = 24 and user = 50).
+func unknownBytesField(b []byte, want protowire.Number) []byte {
+	for len(b) > 0 {
+		num, typ, n := protowire.ConsumeTag(b)
+		if n < 0 {
+			return nil
+		}
+		b = b[n:]
+		switch typ {
+		case protowire.BytesType:
+			v, n := protowire.ConsumeBytes(b)
+			if n < 0 {
+				return nil
+			}
+			if num == want {
+				return v
+			}
+			b = b[n:]
+		case protowire.VarintType:
+			_, n := protowire.ConsumeVarint(b)
+			if n < 0 {
+				return nil
+			}
+			b = b[n:]
+		case protowire.Fixed32Type:
+			_, n := protowire.ConsumeFixed32(b)
+			if n < 0 {
+				return nil
+			}
+			b = b[n:]
+		case protowire.Fixed64Type:
+			_, n := protowire.ConsumeFixed64(b)
+			if n < 0 {
+				return nil
+			}
+			b = b[n:]
+		default:
+			return nil
+		}
+	}
+	return nil
+}
+
+// envelopeBusinessTypeSuperFanBox is EnvelopeBusinessType.SUPER_FAN_BOX (19).
+// The vendored enums.pb.go stops at 7 (BusinessTypeFanClubGtM), but proto3 keeps
+// the numeric value on the wire, so a plain integer compare still works.
+const envelopeBusinessTypeSuperFanBox int32 = 19
+
+// superFanKindFromKeys classifies a barrage by its display-text keys, matching
+// TikTok Live Connector's rule: "superfanjoined" wins over the generic
+// "ttlive_superfan" marker. Case-insensitive; returns ok=false when neither
+// marker is present (an ordinary banner).
+func superFanKindFromKeys(keys []string) (superFanKind, bool) {
+	joined, plain := false, false
+	for _, k := range keys {
+		k = strings.ToLower(k)
+		if strings.Contains(k, "ttlive_superfan_commentnotif_superfanjoined") {
+			joined = true
+		} else if strings.Contains(k, "ttlive_superfan") {
+			plain = true
+		}
+	}
+	switch {
+	case joined:
+		return SUPER_FAN_JOIN, true
+	case plain:
+		return SUPER_FAN_NEW, true
+	}
+	return "", false
+}
+
+// envelopeUser builds a User from a Super Fan Box envelope, which identifies the
+// sender by the flat sendUser* fields rather than a nested User message.
+func envelopeUser(info *pb.WebcastEnvelopeMessage_EnvelopeInfo) *User {
+	if info == nil {
+		return &User{}
+	}
+	avatar := ""
+	if img := info.GetSendUserAvatar(); img != nil && len(img.GetUrlList()) > 0 {
+		avatar = img.GetUrlList()[len(img.GetUrlList())-1]
+	}
+	u := &User{
+		Username: info.GetSendUserId(),
+		Nickname: info.GetSendUserName(),
+	}
+	// sendUserId is a numeric string; the widget's userId field comes from the
+	// int64 ID, so carry it over when it parses (otherwise it would read "0").
+	if id, err := strconv.ParseInt(info.GetSendUserId(), 10, 64); err == nil {
+		u.ID = id
+	}
+	if avatar != "" {
+		u.ProfilePicture = &ProfilePicture{Urls: []string{avatar}}
+	}
+	return u
 }
 
 func toUser(u *pb.User) *User {

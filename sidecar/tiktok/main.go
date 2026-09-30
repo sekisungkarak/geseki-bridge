@@ -448,6 +448,16 @@ func handleEvent(ev gotiktoklive.Event) {
 			emit(outMsg{Ev: "tiktok", Event: "subscribe", Data: userMap(e.User)})
 		}
 
+	case gotiktoklive.SuperFanEvent:
+		// Three Super Fan kinds share one event type; the widget switches on
+		// the wire name. Data carries the common user fields, plus the box
+		// value when the source was a Super Fan Box envelope.
+		extra := map[string]interface{}{}
+		if e.Event == gotiktoklive.SUPER_FAN_BOX {
+			extra["diamondCount"] = e.DiamondCount
+		}
+		emit(outMsg{Ev: "tiktok", Event: string(e.Event), Data: withUser(e.User, extra)})
+
 	case gotiktoklive.ViewersEvent:
 		emit(outMsg{Ev: "tiktok", Event: "roomUser", Data: map[string]interface{}{
 			"viewerCount": e.Viewers,

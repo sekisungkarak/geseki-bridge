@@ -104,6 +104,9 @@ A TikTok LIVE event, normalised to the shape the widgets already understand.
 | `follow`  | a viewer followed              | — |
 | `share`   | a viewer shared the stream     | — |
 | `subscribe` | a viewer subscribed (new sub or renewal) | — |
+| `superFan` | a viewer became a Super Fan | — |
+| `superFanJoin` | an existing Super Fan entered the room | — |
+| `superFanBox` | a viewer sent a Super Fan Box | `diamondCount` |
 | `like`    | likes were sent                | `likeCount`, `totalLikes` |
 | `roomUser`| viewer count changed           | `viewerCount` |
 | `join`    | a viewer entered the room      | — |
@@ -112,6 +115,24 @@ A TikTok LIVE event, normalised to the shape the widgets already understand.
 subscription notice) and `WebcastMemberMessage` with action `SUBSCRIBED`. The
 event is emitted with the common user fields and no extra keys, matching what
 the widgets already render for their subscribe alert.
+
+**Super Fan** is a separate event family, named after TikTok Live Connector's
+`superFan` / `superFanJoin` / `superFanBox`. It is **not** a subscribe: a Super
+Fan is a paid tier, and TikTok signals it on its own messages.
+
+* `superFan` and `superFanJoin` come from `WebcastBarrageMessage`, classified by
+  its display-text key (`content.key`, falling back to `commonBarrageContent.key`,
+  field 24): a key containing `ttlive_superfan_commentnotif_superfanjoined` is a
+  join, any other key containing `ttlive_superfan` is a new Super Fan. The sender
+  rides in field 50 (`user`), which the vendored proto does not declare, so the
+  bridge reads it straight off the wire.
+* `superFanBox` comes from `WebcastEnvelopeMessage` when its display-text key
+  contains `ttlive_superfanbox` or `envelopeInfo.businessType` is
+  `SUPER_FAN_BOX` (19). It carries `diamondCount`; the sender is in the envelope's
+  `sendUser*` fields.
+
+The old `subscribe` event is unchanged and still emitted — Super Fan does not
+replace it. A barrage that carries no Super Fan marker is dropped, not forwarded.
 
 **Common `data` fields** (present when the source event carries a user):
 

@@ -104,6 +104,44 @@ func (u UserEvent) IsHistory() bool {
 	return u.isHistory
 }
 
+// superFanKind names which Super Fan notice a SuperFanEvent carries. The values
+// are the wire event names the sidecar emits, mirroring TikTok Live Connector's
+// WebcastEvent.SUPER_FAN / SUPER_FAN_JOIN / SUPER_FAN_BOX.
+type superFanKind string
+
+const (
+	// SUPER_FAN_NEW: the viewer just became a Super Fan.
+	SUPER_FAN_NEW superFanKind = "superFan"
+	// SUPER_FAN_JOIN: an existing Super Fan entered the room.
+	SUPER_FAN_JOIN superFanKind = "superFanJoin"
+	// SUPER_FAN_BOX: the viewer sent a Super Fan Box (a paid envelope).
+	SUPER_FAN_BOX superFanKind = "superFanBox"
+)
+
+// SuperFanEvent is a Super Fan notice. TikTok delivers it as a
+// WebcastBarrageMessage (became a Super Fan / a Super Fan joined) or a
+// WebcastEnvelopeMessage (sent a Super Fan Box). Upstream had no case for
+// either message, so every Super Fan notice was dropped before it reached a
+// widget.
+type SuperFanEvent struct {
+	MessageID int64
+	Timestamp int64
+	Event     superFanKind
+	User      *User
+	// DiamondCount is the envelope value of a Super Fan Box; 0 for the other
+	// kinds, which carry no coin amount.
+	DiamondCount int
+	isHistory    bool
+}
+
+func (s SuperFanEvent) IsHistory() bool {
+	return s.isHistory
+}
+
+func (s SuperFanEvent) CreatedTimestamp() int64 {
+	return s.Timestamp
+}
+
 type ViewersEvent struct {
 	Timestamp int64
 	MessageID int64
