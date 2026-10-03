@@ -4,6 +4,7 @@
  * One loopback TCP listener that speaks:
  *   - WebSocket  (RFC 6455) at GET /ws   — the widget protocol (docs/protocol.md)
  *   - HTTP       GET /health             — liveness probe
+ *   - HTTP       GET /bridge-port        — port discovery (also on fixed port 47800)
  *   - HTTP       GET /now-playing        — legacy SMTC-Bridge compatible payload
  *   - HTTP       GET /artwork/<app_id>   — cached cover art (?v=<version>)
  *   - HTTP       GET /sessions           — Active Audio Sources page
@@ -65,6 +66,12 @@ const Socket kInvalidSocket = INVALID_SOCKET;
 const char *kBridgeId = "geseki-bridge/" GESEKI_BRIDGE_VERSION;
 const char *kGuid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"; // RFC 6455 magic
 
+// Fixed port that always answers the WebSocket port in use (GET /bridge-port).
+// The widget asks here instead of being told the port in its URL, so changing
+// the port in the plugin needs no edit in the widget. When the WebSocket itself
+// already uses this port, the main listener answers discovery too.
+constexpr int kDiscoveryPort = 47800;
+
 // ------------------------------------------------------------------ globals
 
 std::atomic<bool> g_running{false};
@@ -73,7 +80,9 @@ std::atomic<bool> g_smtc_available{false};
 std::atomic<bool> g_wsa_ready{false};
 
 Socket g_listen_sock = kInvalidSocket;
+Socket g_disc_sock = kInvalidSocket;
 std::thread g_accept_thread;
+std::thread g_disc_thread;
 std::thread g_smtc_thread;
 std::thread g_maint_thread;
 
@@ -443,6 +452,17 @@ std::string BuildHello()
 	return std::string("{\"type\":\"hello\",\"protocol\":") +
 	       std::to_string(GESEKI_BRIDGE_PROTOCOL) + ",\"bridge\":\"" + kBridgeId +
 	       "\",\"capabilities\":[\"tiktok\",\"nowplaying\"]}";
+}
+
+// Discovery answer: which port the WebSocket really listens on, plus the fixed
+// discovery port itself so a widget can tell "no bridge here" from "bridge on
+// another port". Served on BOTH the WebSocket port and kDiscoveryPort.
+std::string BuildPortInfo()
+{
+	return std::string("{\"ok\":true,\"bridge\":\"") + kBridgeId +
+	       "\",\"protocol\":" + std::to_string(GESEKI_BRIDGE_PROTOCOL) +
+	       ",\"wsPort\":" + std::to_string(g_port.load()) +
+	       ",\"discoveryPort\":" + std::to_string(kDiscoveryPort) + "}";
 }
 
 std::string BuildStatus()
@@ -942,6 +962,10 @@ void SendHttp(Socket s, int code, const std::string &ctype, const std::string &b
 	h += "Content-Type: " + ctype + "\r\n";
 	h += "Content-Length: " + std::to_string(body.size()) + "\r\n";
 	h += "Access-Control-Allow-Origin: *\r\n";
+	// The widget is served over https and fetches this over http://127.0.0.1.
+	// Chromium treats that as a public->private request and blocks it unless the
+	// response opts in; without this header discovery silently falls back.
+	h += "Access-Control-Allow-Private-Network: true\r\n";
 	h += "Cache-Control: no-store\r\n";
 	h += "Connection: close\r\n";
 	h += extra;
@@ -1145,6 +1169,8 @@ void HandleConnection(Socket s, std::shared_ptr<std::atomic<bool>> done)
 					SendHttp(s, 200, ContentTypeForImage(bytes),
 						 std::string(bytes.begin(), bytes.end()), extra);
 				}
+			} else if (path == "/bridge-port") {
+				SendHttp(s, 200, "application/json", BuildPortInfo());
 			} else if (path == "/sessions" || path == "/") {
 				SendHttp(s, 200, "text/html; charset=utf-8", SessionsPage());
 			} else {
@@ -1259,6 +1285,39 @@ void AcceptLoop()
 	}
 }
 
+// The fixed discovery listener. It answers GET /bridge-port with the port the
+// WebSocket is on, so a widget only needs to know this one constant. It runs
+// only when the WebSocket itself is NOT on kDiscoveryPort (then the main
+// listener already answers it) — see Start().
+void DiscoveryAcceptLoop()
+{
+	while (g_running.load()) {
+		ReapConnThreads();
+
+		fd_set rf;
+		FD_ZERO(&rf);
+		FD_SET(g_disc_sock, &rf);
+		timeval tv{};
+		tv.tv_usec = 200000;
+		const int sel = select(0, &rf, nullptr, nullptr, &tv);
+		if (!g_running.load())
+			break;
+		if (sel <= 0)
+			continue;
+
+		Socket s = accept(g_disc_sock, nullptr, nullptr);
+		if (s == kInvalidSocket)
+			continue;
+		SetNoDelay(s);
+		SetSendTimeout(s, 5000);
+
+		auto done = std::make_shared<std::atomic<bool>>(false);
+		std::lock_guard<std::mutex> lk(g_cthreads_mu);
+		g_cthreads.push_back(ConnThread{
+			std::thread([s, done] { HandleConnection(s, done); }), done, s});
+	}
+}
+
 } // namespace
 
 // ---------------------------------------------------------------- public API
@@ -1313,6 +1372,36 @@ void Start()
 	g_listen_sock = s;
 	g_port.store(cfg.port);
 
+	// Discovery on the fixed port. When the WebSocket is already there, the main
+	// listener serves /bridge-port too, so a second socket would just fail to
+	// bind; only open it when the ports differ. Best-effort: without it the
+	// widget still works, it just needs the port in its URL as before.
+	if (cfg.port != kDiscoveryPort) {
+		Socket d = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+		if (d != kInvalidSocket) {
+			BOOL dexcl = TRUE;
+			setsockopt(d, SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
+				   reinterpret_cast<const char *>(&dexcl), sizeof(dexcl));
+			sockaddr_in daddr{};
+			daddr.sin_family = AF_INET;
+			daddr.sin_port = htons(static_cast<u_short>(kDiscoveryPort));
+			daddr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+			if (bind(d, reinterpret_cast<sockaddr *>(&daddr), sizeof(daddr)) == 0 &&
+			    listen(d, SOMAXCONN) == 0) {
+				g_disc_sock = d;
+				g_disc_thread = std::thread(DiscoveryAcceptLoop);
+				obs_log(LOG_INFO,
+					"geseki-bridge: discovery on http://127.0.0.1:%d/bridge-port -> ws port %d",
+					kDiscoveryPort, cfg.port);
+			} else {
+				obs_log(LOG_WARNING,
+					"geseki-bridge: discovery port %d unavailable (%d); widgets need the port in their URL",
+					kDiscoveryPort, WSAGetLastError());
+				CloseSocket(d);
+			}
+		}
+	}
+
 	g_smtc_available.store(geseki::smtc::Available());
 
 	g_accept_thread = std::thread(AcceptLoop);
@@ -1355,6 +1444,8 @@ void Stop()
 	// so nothing new can be queued while we drain.
 	if (g_accept_thread.joinable())
 		g_accept_thread.join();
+	if (g_disc_thread.joinable())
+		g_disc_thread.join();
 
 	{
 		std::lock_guard<std::mutex> lk(g_cthreads_mu);
@@ -1373,6 +1464,7 @@ void Stop()
 		g_maint_thread.join();
 
 	CloseSocket(g_listen_sock);
+	CloseSocket(g_disc_sock);
 
 	{
 		std::lock_guard<std::mutex> lk(g_clients_mu);

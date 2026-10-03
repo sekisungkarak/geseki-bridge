@@ -6,6 +6,8 @@ One OBS plugin for local services [Sekisungkarak](https://github.com/sekisungkar
 ws://127.0.0.1:47800/ws
 ```
 
+![SS Geseki Settings](docs/assets/geseki-bridge-settings.png)
+
 The wire contract lives in [`docs/protocol.md`](docs/protocol.md) — read it
 first.
 

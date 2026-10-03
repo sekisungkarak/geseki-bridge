@@ -26,6 +26,7 @@ The plugin also answers a small HTTP surface (outside the upgrade):
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/health` | liveness probe |
+| `GET` | `/bridge-port` | port discovery: which port the WebSocket is on |
 | `GET` | `/now-playing` | the current `nowplaying` **data** object, for the legacy SMTC-Bridge widget that polls this endpoint |
 | `GET` | `/artwork/<app_id>?v=<n>` | cached cover art bytes |
 | `GET` | `/` | the browser-based settings page |
@@ -35,6 +36,28 @@ The plugin also answers a small HTTP surface (outside the upgrade):
 ```json
 { "ok": true, "bridge": "geseki-bridge/0.2.0", "protocol": 1 }
 ```
+
+`GET /bridge-port` returns:
+
+```json
+{ "ok": true, "bridge": "geseki-bridge/0.2.0", "protocol": 1, "wsPort": 47800, "discoveryPort": 47800 }
+```
+
+### Port discovery
+
+The WebSocket port is configurable, and a widget cannot read the plugin's
+config. So the bridge also listens on a **fixed** discovery port `47800` and
+answers `/bridge-port` there with the real `wsPort`. A widget asks that fixed
+port first and uses the answer, so changing the port in the plugin needs no
+edit in any widget. When the WebSocket itself already uses `47800`, the main
+listener serves `/bridge-port` too (one port, both roles). If `47800` is taken
+by another program, discovery is unavailable and a widget falls back to the
+port in its own URL.
+
+Both responses are `Access-Control-Allow-Origin: *` and carry
+`Access-Control-Allow-Private-Network: true`, because a widget is served over
+`https` and fetches `http://127.0.0.1` (a public→private request Chromium
+otherwise blocks).
 
 `GET /now-playing` returns the same object as the `nowplaying` message's
 `data` field (below), so an existing SMTC-Bridge widget keeps working once it
