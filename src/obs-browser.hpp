@@ -9,9 +9,8 @@
 //
 // Only the virtual slots up to create_widget() are declared: a vtable prefix is
 // fixed by declaration order, so calling create_widget() reaches the right
-// entry. It returns QWidget* rather than obs-browser's QCefWidget* — the two
-// are the same pointer (QCefWidget derives from QWidget with no virtual base),
-// and the caller only ever needs a QWidget*.
+// entry. QCefWidget is declared below with the same slot order as obs-browser's,
+// so the pointer it returns can also close the browser (see widget-docks.cpp).
 
 #include <obs.h>
 #include <util/platform.h>
@@ -20,13 +19,26 @@
 
 #include <string>
 
+// The CEF panel widget. Only the slots up to closeBrowser() are declared, and
+// in obs-browser's order, so that call reaches the right vtable entry.
+class QCefWidget : public QWidget {
+public:
+	virtual void setURL(const std::string &url) = 0;
+	virtual void setStartupScript(const std::string &script) = 0;
+	virtual void allowAllPopups(bool allow) = 0;
+	virtual void closeBrowser() = 0;
+	virtual void reloadPage() = 0;
+	virtual bool zoomPage(int direction) = 0;
+	virtual void executeJavaScript(const std::string &script) = 0;
+};
+
 struct QCef {
 	virtual ~QCef() {}
 	virtual bool init_browser() = 0;
 	virtual bool initialized() = 0;
 	virtual bool wait_for_browser_init() = 0;
-	virtual QWidget *create_widget(QWidget *parent, const std::string &url,
-				       void *cookie_manager = nullptr) = 0;
+	virtual QCefWidget *create_widget(QWidget *parent, const std::string &url,
+					  void *cookie_manager = nullptr) = 0;
 };
 
 namespace geseki::browser {

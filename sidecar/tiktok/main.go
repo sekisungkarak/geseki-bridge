@@ -22,7 +22,7 @@ import (
 	gotiktoklive "github.com/steampoweredtaco/gotiktoklive"
 )
 
-const version = "0.1.0"
+const version = "0.2.0"
 
 // ---------------------------------------------------------------- stdio I/O
 
@@ -423,6 +423,7 @@ func handleEvent(ev gotiktoklive.Event) {
 		// filters on repeatEnd, and it needs repeatCount to show the total, so
 		// every frame is forwarded rather than collapsing them here.
 		emit(outMsg{Ev: "tiktok", Event: "gift", Data: withIdentity(withUser(e.User, map[string]interface{}{
+			"giftId":         e.ID,
 			"giftName":       e.Name,
 			"giftPictureUrl": e.PictureURL,
 			"repeatCount":    e.RepeatCount,

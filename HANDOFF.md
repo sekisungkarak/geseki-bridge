@@ -108,7 +108,7 @@ computes its own Vibrant palette); `Thumbnail` is a URL, not base64.
   `windows/*`), except `cmake/windows/buildspec.cmake` where **qt6 was removed
   from `dependencies_list`** (no Qt here).
 - **`CMakePresets.json`** — Windows x64 only (`windows-x64`, `windows-ci-x64`).
-- **`buildspec.json`** — name `geseki-bridge`, version `0.1.0`, OBS sources
+- **`buildspec.json`** — name `geseki-bridge`, version `0.2.0`, OBS sources
   `31.1.1`, prebuilt deps `2025-07-11`. Needs `platformConfig.macos.bundleId`
   because `bootstrap.cmake` reads it unconditionally.
 - **`data/locale/en-US.ini`** — `GesekiBridge.MenuItem`. Note the path is

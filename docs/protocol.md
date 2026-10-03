@@ -33,7 +33,7 @@ The plugin also answers a small HTTP surface (outside the upgrade):
 `GET /health` returns:
 
 ```json
-{ "ok": true, "bridge": "geseki-bridge/0.1.0", "protocol": 1 }
+{ "ok": true, "bridge": "geseki-bridge/0.2.0", "protocol": 1 }
 ```
 
 `GET /now-playing` returns the same object as the `nowplaying` message's
@@ -55,7 +55,7 @@ Sent once, immediately after the socket opens.
 {
   "type": "hello",
   "protocol": 1,
-  "bridge": "geseki-bridge/0.1.0",
+  "bridge": "geseki-bridge/0.2.0",
   "capabilities": ["tiktok", "nowplaying"]
 }
 ```
@@ -201,7 +201,7 @@ REST payload used, so existing widget code keeps working.
 {
   "type": "nowplaying",
   "data": {
-    "app_version": "0.1.0",
+    "app_version": "0.2.0",
     "current_session_id": "Spotify.exe",
     "sessions": [
       {
