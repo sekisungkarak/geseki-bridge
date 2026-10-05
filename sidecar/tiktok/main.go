@@ -22,7 +22,7 @@ import (
 	gotiktoklive "github.com/steampoweredtaco/gotiktoklive"
 )
 
-const version = "0.3.0"
+const version = "0.5.0"
 
 // ---------------------------------------------------------------- stdio I/O
 
@@ -93,7 +93,12 @@ func stopSession() {
 type connectCmd struct {
 	Cmd      string `json:"cmd"`
 	Username string `json:"username"`
-	APIKey   string `json:"apiKey"`
+	// SignerUrl is the local sign server. Set unless the user turned on
+	// the alternative connection mode.
+	SignerUrl string `json:"signerUrl"`
+	// APIKey is optional and belongs to the alternative connection mode,
+	// where it raises the signing rate limit. It is unused locally.
+	APIKey string `json:"apiKey"`
 }
 
 func handleConnect(c connectCmd) {
@@ -104,25 +109,53 @@ func handleConnect(c connectCmd) {
 		emitState("error", "missing username")
 		return
 	}
-
 	opts := []gotiktoklive.TikTokLiveOption{}
-	if c.APIKey != "" {
-		opts = append(opts, gotiktoklive.SigningApiKey(c.APIKey))
+	if c.SignerUrl != "" {
+		// Default: sign locally, no third-party service involved.
+		opts = append(opts, gotiktoklive.SigningUrl(c.SignerUrl))
+		logf("using local sign server %s", c.SignerUrl)
+	} else {
+		// Alternative connection mode: sign through the library's own
+		// remote service. An API key is optional and only raises the
+		// limit it is subject to.
+		if c.APIKey != "" {
+			opts = append(opts, gotiktoklive.SigningApiKey(c.APIKey))
+		}
+		logf("using alternative connection mode")
 	}
-
-	tt, err := gotiktoklive.NewTikTok(opts...)
-	if err != nil {
-		emitState("error", "init: "+err.Error())
-		return
-	}
-	tt.SetInfoHandler(func(a ...interface{}) { logf("info: %v", a) })
-	tt.SetWarnHandler(func(a ...interface{}) { logf("warn: %v", a) })
-	tt.SetErrorHandler(func(a ...interface{}) { logf("error: %v", a) })
 
 	ctx, cancel := context.WithCancel(context.Background())
 	setSession(nil, cancel)
 
-	go runSession(ctx, cancel, tt, username)
+	go runWithSigner(ctx, cancel, opts, username)
+}
+
+// runWithSigner builds the TikTok client, retrying while the signer is not
+// ready yet.
+//
+// NewTikTok queries the signer for its rate limits before returning, so a
+// signer that is still starting makes it fail with a connection error. The
+// local sign server starts at the same moment as this sidecar but needs
+// ~30-90s to bring up its browser, so that window is the normal case: giving
+// up here would leave the widget silent until the user reconnected by hand.
+// Retry with the usual backoff, then hand over to runSession.
+func runWithSigner(ctx context.Context, cancel context.CancelFunc, opts []gotiktoklive.TikTokLiveOption, username string) {
+	delay := reconnectBaseDelay
+	for {
+		tt, err := gotiktoklive.NewTikTok(opts...)
+		if err == nil {
+			tt.SetInfoHandler(func(a ...interface{}) { logf("info: %v", a) })
+			tt.SetWarnHandler(func(a ...interface{}) { logf("warn: %v", a) })
+			tt.SetErrorHandler(func(a ...interface{}) { logf("error: %v", a) })
+			runSession(ctx, cancel, tt, username)
+			return
+		}
+		logf("init failed: %v (retry in %s)", err, delay)
+		emitState("connecting", "waiting for sign server")
+		if !sleepBackoff(ctx, &delay) {
+			return
+		}
+	}
 }
 
 // Reconnect policy. A dropped WebSocket (network blip, TikTok closing the
@@ -199,6 +232,13 @@ func runSession(ctx context.Context, cancel context.CancelFunc, tt *gotiktoklive
 				"viewerCount": l.Info.UserCount,
 			}})
 		}
+		// The room owner carries the streamer's real avatar. The plugin shows
+		// it in the dashboard status pill, so report it once per session.
+		if url := ownerAvatarURL(l); url != "" {
+			emit(outMsg{Ev: "tiktok", Event: "roomOwner", Data: map[string]interface{}{
+				"avatar": url,
+			}})
+		}
 
 		// pumpEvents returns true when the context ended (stop for good), false
 		// when the socket closed (reconnect).
@@ -217,6 +257,29 @@ func runSession(ctx context.Context, cancel context.CancelFunc, tt *gotiktoklive
 		}
 		emitState("connecting", "reconnecting")
 	}
+}
+
+// ownerAvatarURL returns the streamer's avatar image URL, or "" when the
+// room info does not carry one.
+//
+// avatar_medium is preferred over avatar_thumb: both are small, but the
+// medium one survives being shown at 28px without looking soft.
+func ownerAvatarURL(l *gotiktoklive.Live) string {
+	if l == nil || l.Info == nil || l.Info.Owner == nil {
+		return ""
+	}
+	for _, list := range [][]string{
+		l.Info.Owner.AvatarMedium.URLList,
+		l.Info.Owner.AvatarLarge.URLList,
+		l.Info.Owner.AvatarThumb.URLList,
+	} {
+		for _, u := range list {
+			if u != "" {
+				return u
+			}
+		}
+	}
+	return ""
 }
 
 // pumpEvents forwards events until the socket closes or the context is

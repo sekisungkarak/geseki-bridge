@@ -5,6 +5,7 @@
  *   - WebSocket  (RFC 6455) at GET /ws   — the widget protocol (docs/protocol.md)
  *   - HTTP       GET /health             — liveness probe
  *   - HTTP       GET /bridge-port        — port discovery (also on fixed port 47800)
+ *   - HTTP       POST /save?name=<file>  — write the body to the Downloads folder
  *   - HTTP       GET /now-playing        — legacy SMTC-Bridge compatible payload
  *   - HTTP       GET /artwork/<app_id>   — cached cover art (?v=<version>)
  *   - HTTP       GET /sessions           — Active Audio Sources page
@@ -33,9 +34,11 @@
 #include <ws2tcpip.h>
 #include <windows.h>
 #include <shellapi.h>
+#include <shlobj.h>
 
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "shell32.lib")
+#pragma comment(lib, "ole32.lib")
 
 #include <obs-module.h>
 #include <obs.h>
@@ -381,6 +384,132 @@ void EnsureParentDir(const std::string &path)
 	}
 }
 
+std::wstring Utf8ToWide(const std::string &s)
+{
+	const int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
+	if (n <= 0)
+		return std::wstring();
+	std::wstring w(static_cast<size_t>(n), L'\0');
+	MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, &w[0], n);
+	w.resize(static_cast<size_t>(n - 1));
+	return w;
+}
+
+std::string WideToUtf8(const std::wstring &w)
+{
+	const int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, nullptr, 0, nullptr, nullptr);
+	if (n <= 0)
+		return std::string();
+	std::string s(static_cast<size_t>(n), '\0');
+	WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, &s[0], n, nullptr, nullptr);
+	s.resize(static_cast<size_t>(n - 1));
+	return s;
+}
+
+bool PathExists(const std::string &path)
+{
+	if (path.empty())
+		return false;
+	return GetFileAttributesW(Utf8ToWide(path).c_str()) != INVALID_FILE_ATTRIBUTES;
+}
+
+// The user's real Downloads folder (FOLDERID_Downloads), not the plugin
+// config tree. Empty when the shell cannot resolve it.
+std::string DownloadsDir()
+{
+	PWSTR p = nullptr;
+	const HRESULT hr = SHGetKnownFolderPath(FOLDERID_Downloads, 0, nullptr, &p);
+	if (FAILED(hr) || !p)
+		return std::string();
+	std::string dir = WideToUtf8(p);
+	CoTaskMemFree(p);
+	return dir;
+}
+
+// A filename the page supplied, reduced to a single safe path component:
+// no directory separators (so "../" cannot escape), no reserved characters.
+std::string SafeFileName(const std::string &in)
+{
+	std::string name = in;
+	const size_t slash = name.find_last_of("\\/");
+	if (slash != std::string::npos)
+		name = name.substr(slash + 1);
+
+	std::string out;
+	for (char c : name) {
+		const unsigned char u = static_cast<unsigned char>(c);
+		const bool bad = u < 0x20 || c == '<' || c == '>' || c == ':' ||
+				 c == '"' || c == '/' || c == '\\' || c == '|' ||
+				 c == '?' || c == '*';
+		out += bad ? '_' : c;
+	}
+	if (out.empty() || out == "." || out == "..")
+		out = "geseki-export";
+	if (out.size() > 120)
+		out.resize(120);
+	return out;
+}
+
+// Never clobber an existing file: append " (1)", " (2)", ... before the
+// extension, the way a browser's own download would.
+std::string UniquePath(const std::string &dir, const std::string &name)
+{
+	std::string path = dir + "\\" + name;
+	if (!PathExists(path))
+		return path;
+
+	std::string stem = name, ext;
+	const size_t dot = name.find_last_of('.');
+	if (dot != std::string::npos && dot != 0) {
+		stem = name.substr(0, dot);
+		ext = name.substr(dot);
+	}
+	for (int i = 1; i < 100000; ++i) {
+		path = dir + "\\" + stem + " (" + std::to_string(i) + ")" + ext;
+		if (!PathExists(path))
+			return path;
+	}
+	return dir + "\\" + stem + "-" + std::to_string(GetTickCount()) + ext;
+}
+
+bool WriteFileBytes(const std::string &path, const std::string &data)
+{
+	if (path.empty())
+		return false;
+	EnsureParentDir(path);
+	HANDLE h = CreateFileW(Utf8ToWide(path).c_str(), GENERIC_WRITE, 0, nullptr,
+			       CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+	if (h == INVALID_HANDLE_VALUE)
+		return false;
+	DWORD written = 0;
+	const BOOL ok = WriteFile(h, data.data(), static_cast<DWORD>(data.size()),
+				  &written, nullptr);
+	CloseHandle(h);
+	return ok && written == data.size();
+}
+
+// Value of one query-string parameter (already percent-decoded).
+std::string QueryParam(const std::string &target, const std::string &key)
+{
+	const size_t q = target.find('?');
+	if (q == std::string::npos)
+		return std::string();
+	const std::string query = target.substr(q + 1);
+	size_t pos = 0;
+	while (pos < query.size()) {
+		const size_t amp = query.find('&', pos);
+		const std::string pair =
+			query.substr(pos, amp == std::string::npos ? std::string::npos : amp - pos);
+		const size_t eq = pair.find('=');
+		if (eq != std::string::npos && pair.substr(0, eq) == key)
+			return UrlDecode(pair.substr(eq + 1));
+		if (amp == std::string::npos)
+			break;
+		pos = amp + 1;
+	}
+	return std::string();
+}
+
 std::string ConfigFilePath()
 {
 	char *path = obs_module_config_path("config.json");
@@ -416,6 +545,14 @@ geseki::bridge::Config LoadConfigFile()
 	cfg.tiktok_username = DataString(data, "tiktok_username");
 	cfg.tiktok_api_key = DataString(data, "tiktok_api_key");
 	cfg.tiktok_autoconnect = obs_data_get_bool(data, "tiktok_autoconnect");
+	cfg.alt_connection = obs_data_get_bool(data, "alt_connection");
+	// Fall back to the struct default when the key is absent: reading an int
+	// that is not there yields 0, which is not a usable port.
+	if (obs_data_has_user_value(data, "sign_server_port")) {
+		const long long sp = obs_data_get_int(data, "sign_server_port");
+		if (sp > 0 && sp <= 65535)
+			cfg.sign_server_port = static_cast<int>(sp);
+	}
 	obs_data_release(data);
 	return cfg;
 }
@@ -435,6 +572,8 @@ void SaveConfigFile(const geseki::bridge::Config &cfg)
 	obs_data_set_string(data, "tiktok_username", cfg.tiktok_username.c_str());
 	obs_data_set_string(data, "tiktok_api_key", cfg.tiktok_api_key.c_str());
 	obs_data_set_bool(data, "tiktok_autoconnect", cfg.tiktok_autoconnect);
+	obs_data_set_bool(data, "alt_connection", cfg.alt_connection);
+	obs_data_set_int(data, "sign_server_port", cfg.sign_server_port);
 	if (!obs_data_save_json_safe(data, path.c_str(), "tmp", "bak"))
 		obs_log(LOG_WARNING, "geseki-bridge: could not save config to %s", path.c_str());
 	obs_data_release(data);
@@ -446,6 +585,7 @@ std::mutex g_status_mu;
 std::string g_tiktok_state = "off";
 std::string g_tiktok_message;
 std::string g_tiktok_username;
+std::string g_tiktok_avatar;
 
 std::string BuildHello()
 {
@@ -471,7 +611,8 @@ std::string BuildStatus()
 	const bool smtc = g_smtc_available.load();
 	return std::string("{\"type\":\"status\",\"tiktok\":{\"state\":\"") +
 	       geseki::json::Escape(g_tiktok_state) + "\",\"username\":\"" +
-	       geseki::json::Escape(g_tiktok_username) + "\",\"message\":\"" +
+	       geseki::json::Escape(g_tiktok_username) + "\",\"avatar\":\"" +
+	       geseki::json::Escape(g_tiktok_avatar) + "\",\"message\":\"" +
 	       geseki::json::Escape(g_tiktok_message) +
 	       "\"},\"nowplaying\":{\"state\":\"" + (smtc ? "connected" : "off") +
 	       // Say WHY the subsystem is off instead of always sending "": a
@@ -787,6 +928,7 @@ std::mutex g_tt_mu;
 bool g_tt_should_run = false;
 std::string g_tt_user;
 std::string g_tt_key;
+std::string g_tt_signer;
 
 // Serialises calls into the supervisor: the maintenance thread may be inside
 // tiktok::Start() when Stop() runs, and the supervisor is not re-entrant.
@@ -815,6 +957,26 @@ void OnSidecarMessage(const std::string &line)
 		return;
 
 	const std::string ev = JsonStrField(v, "ev");
+	// The streamer's avatar arrives as its own event and only feeds the
+	// status payload, so it is not forwarded to widgets.
+	if (ev == "tiktok" && JsonStrField(v, "event") == "roomOwner") {
+		if (const auto *d = v.find("data")) {
+			const std::string avatar = JsonStrField(*d, "avatar");
+			bool changed = false;
+			{
+				std::lock_guard<std::mutex> lk(g_status_mu);
+				if (!avatar.empty() && avatar != g_tiktok_avatar) {
+					g_tiktok_avatar = avatar;
+					changed = true;
+				}
+			}
+			// Re-broadcast so the pill updates without waiting for the next
+			// state change.
+			if (changed)
+				Broadcast(BuildStatus(), "status");
+		}
+		return;
+	}
 	if (ev == "tiktok") {
 		// Re-wrap the sidecar frame {"ev":"tiktok",...} into the public shape
 		// {"type":"tiktok",...}. Re-serialising (rather than string-splicing)
@@ -834,13 +996,233 @@ void OnSidecarMessage(const std::string &line)
 
 // Starts (or restarts) the sidecar and records the intent so the watchdog can
 // bring it back if it dies.
+// ------------------------------------------------------- local sign server
+//
+// TikTok needs every request signed. The default is to sign locally:
+// sign-server/ is a small Node program that drives headless Chrome and
+// borrows TikTok's own signing code, so no third-party service is involved
+// and there is no shared rate limit.
+//
+// Node is NOT bundled. When it is missing the sign server cannot run, and
+// the user can turn on the Alternative Connection Mode to sign remotely
+// instead.
+
+std::mutex g_signer_mu;
+HANDLE g_signer_proc = nullptr;
+std::atomic<bool> g_signer_up{false};
+// False when we adopted a server that was already running (an orphan from a
+// previous OBS that was killed). We must never kill a process we did not
+// start, so StopSignServer only terminates our own child.
+std::atomic<bool> g_signer_ours{false};
+
+// Directory holding the plugin DLL — sign-server/ sits beside it.
+std::string ModuleDir()
+{
+	HMODULE self = nullptr;
+	GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+				   GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+			   reinterpret_cast<LPCWSTR>(&ModuleDir), &self);
+	wchar_t path[MAX_PATH]{};
+	GetModuleFileNameW(self, path, MAX_PATH);
+	std::wstring dir(path);
+	const size_t slash = dir.find_last_of(L"\\/");
+	if (slash != std::wstring::npos)
+		dir.resize(slash);
+	return WideToUtf8(dir);
+}
+
+// True when `node` can be run. There is no fallback signer any more, so a
+// missing Node means TikTok cannot connect at all — callers say so.
+bool NodeAvailable()
+{
+	wchar_t buf[MAX_PATH]{};
+	return SearchPathW(nullptr, L"node.exe", nullptr, MAX_PATH, buf, nullptr) > 0;
+}
+
+bool SignServerRunning() { return g_signer_up.load(); }
+
+std::string SignerUrlFor(int port)
+{
+	return std::string("http://127.0.0.1:") + std::to_string(port);
+}
+
+// True when the sign server has its dependencies installed. node_modules is
+// not committed (55 MB), so a fresh clone needs one `npm install`.
+bool SignServerDepsReady(const std::string &dir)
+{
+	return GetFileAttributesW(Utf8ToWide(dir + "\\node_modules").c_str()) !=
+	       INVALID_FILE_ATTRIBUTES;
+}
+
+// Runs `npm install --omit=dev` in `dir`, synchronously. Called on a worker
+// thread only, so the OBS UI never blocks. Returns true on exit code 0.
+bool RunNpmInstall(const std::string &dir)
+{
+	// npm is a .cmd shim on Windows and CreateProcessW does not apply PATHEXT,
+	// so run it through the command shell. PUPPETEER_SKIP_DOWNLOAD is set
+	// inline: Puppeteer would otherwise download its own Chrome, which is slow
+	// and fails on a flaky network, while the sign server uses the Chrome
+	// already installed on the machine.
+	std::wstring cmd =
+		L"cmd.exe /c \"set PUPPETEER_SKIP_DOWNLOAD=1 && "
+		L"set PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=1 && "
+		L"npm install --omit=dev --no-audit --no-fund\"";
+	std::vector<wchar_t> cmd_buf(cmd.begin(), cmd.end());
+	cmd_buf.push_back(L'\0');
+
+	STARTUPINFOW si{};
+	si.cb = sizeof(si);
+	PROCESS_INFORMATION pi{};
+	const BOOL ok = CreateProcessW(nullptr, cmd_buf.data(), nullptr, nullptr, FALSE,
+				       CREATE_NO_WINDOW, nullptr, Utf8ToWide(dir).c_str(), &si, &pi);
+	if (!ok) {
+		obs_log(LOG_WARNING, "geseki-bridge: npm install could not start (err %lu)",
+			GetLastError());
+		return false;
+	}
+	WaitForSingleObject(pi.hProcess, 10 * 60 * 1000); // 10 min ceiling
+	DWORD code = 1;
+	GetExitCodeProcess(pi.hProcess, &code);
+	CloseHandle(pi.hThread);
+	CloseHandle(pi.hProcess);
+	return code == 0;
+}
+
+// True when something already answers the sign server health check on
+// `port`. Used to adopt an orphan left behind when OBS was killed.
+bool SignServerResponding(int port)
+{
+	Socket s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+	if (s == kInvalidSocket)
+		return false;
+
+	// Short timeouts: this runs on the OBS startup path.
+	DWORD tv = 400;
+	setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char *>(&tv), sizeof(tv));
+	setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char *>(&tv), sizeof(tv));
+
+	sockaddr_in addr{};
+	addr.sin_family = AF_INET;
+	addr.sin_port = htons(static_cast<u_short>(port));
+	addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	const bool up = connect(s, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) == 0;
+	CloseSocket(s);
+	return up;
+}
+
+// Launches `node server.mjs` from sign-server/. Returns false (and logs) when
+// Node is missing or the script is not there.
+bool StartSignServer(int port)
+{
+	if (g_signer_up.load())
+		return true;
+
+	// An orphan from a previous session (OBS killed rather than closed) is
+	// still holding the port: adopt it instead of starting a second server
+	// that cannot bind. It is not our child, so Stop() leaves it alone.
+	if (SignServerResponding(port)) {
+		g_signer_up.store(true);
+		g_signer_ours.store(false);
+		obs_log(LOG_INFO, "geseki-bridge: reusing the sign server already on port %d", port);
+		return true;
+	}
+
+	if (!NodeAvailable()) {
+		obs_log(LOG_ERROR, "geseki-bridge: Node.js not found; TikTok cannot "
+				     "connect. Install Node.js and Google Chrome.");
+		return false;
+	}
+
+	const std::string dir = ModuleDir() + "\\sign-server";
+	const std::string script = dir + "\\server.mjs";
+	if (GetFileAttributesW(Utf8ToWide(script).c_str()) == INVALID_FILE_ATTRIBUTES) {
+		obs_log(LOG_ERROR, "geseki-bridge: sign-server not found next to the "
+				     "plugin; TikTok cannot connect");
+		return false;
+	}
+
+	// Dependencies are installed once, on a worker thread: `npm install` can
+	// take a minute and must never stall OBS startup. There is no fallback
+	// signer, so TikTok stays unavailable until the install finishes and OBS
+	// is restarted.
+	if (!SignServerDepsReady(dir)) {
+		obs_log(LOG_WARNING, "geseki-bridge: installing sign-server dependencies "
+				      "(one time, needs Node.js) — TikTok cannot connect "
+				      "until this finishes; restart OBS afterwards");
+		std::thread([dir] {
+			if (RunNpmInstall(dir))
+				obs_log(LOG_INFO, "geseki-bridge: sign-server dependencies installed; "
+						   "restart OBS to connect to TikTok");
+			else
+				obs_log(LOG_ERROR, "geseki-bridge: sign-server dependency install "
+						    "failed; TikTok cannot connect");
+		}).detach();
+		return false;
+	}
+
+	// Run it hidden: the sign server is a background helper, not a window.
+	// PORT is set inline through cmd.exe: server.mjs reads it from the
+	// environment, and a hand-built environment block is easy to get wrong
+	// (a malformed one fails with error 87 and no explanation).
+	std::wstring cmd = L"cmd.exe /c \"set PORT=" + std::to_wstring(port) +
+			   L" && node \"server.mjs\"\"";
+	std::vector<wchar_t> cmd_buf(cmd.begin(), cmd.end());
+	cmd_buf.push_back(L'\0');
+
+	STARTUPINFOW si{};
+	si.cb = sizeof(si);
+	PROCESS_INFORMATION pi{};
+	const BOOL ok = CreateProcessW(nullptr, cmd_buf.data(), nullptr, nullptr, FALSE,
+				       CREATE_NO_WINDOW, nullptr, Utf8ToWide(dir).c_str(), &si, &pi);
+	if (!ok) {
+		obs_log(LOG_WARNING, "geseki-bridge: could not start the sign server (err %lu)",
+			GetLastError());
+		return false;
+	}
+	CloseHandle(pi.hThread);
+	{
+		std::lock_guard<std::mutex> lk(g_signer_mu);
+		g_signer_proc = pi.hProcess;
+	}
+	g_signer_up.store(true);
+	g_signer_ours.store(true);
+	obs_log(LOG_INFO, "geseki-bridge: local sign server started on port %d", port);
+	return true;
+}
+
+void StopSignServer()
+{
+	std::lock_guard<std::mutex> lk(g_signer_mu);
+	// Never kill an adopted server: it belongs to another session (or to a
+	// manual run) and killing it would break whoever is using it.
+	if (g_signer_proc && g_signer_ours.load()) {
+		TerminateProcess(g_signer_proc, 0);
+		CloseHandle(g_signer_proc);
+		g_signer_proc = nullptr;
+	}
+	g_signer_up.store(false);
+	g_signer_ours.store(false);
+}
+
 void StartSidecar(const std::string &username, const std::string &apiKey)
 {
+	// Resolve everything once, before the state lock, so the supervisor loop
+	// reuses the same values when it restarts the sidecar. The alternative
+	// mode signs remotely and therefore needs no sign server.
+	bool alt = false;
+	std::string signer;
+	{
+		std::lock_guard<std::mutex> lk(g_cfg_mu);
+		alt = g_cfg.alt_connection;
+		if (!alt && SignServerRunning())
+			signer = SignerUrlFor(g_cfg.sign_server_port);
+	}
 	{
 		std::lock_guard<std::mutex> lk(g_tt_mu);
-		g_tt_should_run = !username.empty();
+		g_tt_should_run = !username.empty() && (alt || !signer.empty());
 		g_tt_user = username;
 		g_tt_key = apiKey;
+		g_tt_signer = signer;
 	}
 	if (username.empty()) {
 		std::lock_guard<std::mutex> lk(g_tt_call_mu);
@@ -848,10 +1230,18 @@ void StartSidecar(const std::string &username, const std::string &apiKey)
 		SetTikTokStatus("off", "");
 		return;
 	}
+	if (!alt && signer.empty()) {
+		// Local signing was asked for, but the sign server is not up: without
+		// a signature nothing can connect. Say why, and name the way out.
+		SetTikTokStatus("error",
+				"local sign server unavailable - turn on Alternative "
+				"Connection Mode, or install Node.js and Google Chrome");
+		return;
+	}
 	SetTikTokStatus("connecting", "");
 	{
 		std::lock_guard<std::mutex> lk(g_tt_call_mu);
-		geseki::tiktok::Start(username, apiKey, OnSidecarMessage);
+		geseki::tiktok::Start(username, signer, apiKey, OnSidecarMessage);
 	}
 }
 
@@ -888,7 +1278,13 @@ void HandleTikTokConnect(const std::string &username, const std::string &apiKey)
 	{
 		std::lock_guard<std::mutex> lk(g_status_mu);
 		g_tiktok_username = c.tiktok_username;
+		// Drop the previous streamer's photo: the new room reports its own
+		// once it resolves, and showing the old one beside the new name
+		// would be wrong.
+		g_tiktok_avatar.clear();
 	}
+	// Publish the new name immediately; the avatar follows with the room.
+	Broadcast(BuildStatus(), "status");
 	StartSidecar(c.tiktok_username, c.tiktok_api_key);
 }
 
@@ -1125,6 +1521,18 @@ void HandleConnection(Socket s, std::shared_ptr<std::atomic<bool>> done)
 			headers[key] = val;
 		}
 
+		// Request body (POST). Capped so a hostile client cannot make the
+		// plugin allocate without bound; only /save reads it.
+		std::string body;
+		if (const auto it = headers.find("content-length"); it != headers.end()) {
+			const long long n = strtoll(it->second.c_str(), nullptr, 10);
+			if (n > 0 && n <= (16LL << 20)) {
+				body.resize(static_cast<size_t>(n));
+				if (!RecvAll(s, &body[0], static_cast<size_t>(n)))
+					body.clear();
+			}
+		}
+
 		if (!method.empty() && !target.empty()) {
 			std::string path = target;
 			if (const auto q = target.find('?'); q != std::string::npos)
@@ -1168,6 +1576,32 @@ void HandleConnection(Socket s, std::shared_ptr<std::atomic<bool>> done)
 						"Cache-Control: public, max-age=31536000, immutable\r\n";
 					SendHttp(s, 200, ContentTypeForImage(bytes),
 						 std::string(bytes.begin(), bytes.end()), extra);
+				}
+			} else if (path == "/save" && method == "POST") {
+				// The widget pages cannot write files inside OBS (obs-browser
+				// installs no CEF download handler), so they POST the payload
+				// here and this native side drops it in the real Downloads.
+				const std::string name = SafeFileName(QueryParam(target, "name"));
+				const std::string dir = DownloadsDir();
+				if (dir.empty()) {
+					SendHttp(s, 500, "application/json",
+						 "{\"ok\":false,\"error\":\"could not locate the Downloads folder\"}");
+				} else if (body.empty()) {
+					SendHttp(s, 400, "application/json",
+						 "{\"ok\":false,\"error\":\"empty body\"}");
+				} else {
+					const std::string full = UniquePath(dir, name);
+					if (!WriteFileBytes(full, body)) {
+						SendHttp(s, 500, "application/json",
+							 "{\"ok\":false,\"error\":\"could not write the file\"}");
+					} else {
+						obs_log(LOG_INFO, "geseki-bridge: saved %s (%llu bytes)",
+							full.c_str(),
+							static_cast<unsigned long long>(body.size()));
+						SendHttp(s, 200, "application/json",
+							 "{\"ok\":true,\"path\":\"" +
+								 geseki::json::Escape(full) + "\"}");
+					}
 				}
 			} else if (path == "/bridge-port") {
 				SendHttp(s, 200, "application/json", BuildPortInfo());
@@ -1229,12 +1663,13 @@ void MaintenanceLoop()
 			std::this_thread::sleep_for(std::chrono::milliseconds(50));
 
 		bool want = false;
-		std::string user, key;
+		std::string user, key, signer;
 		{
 			std::lock_guard<std::mutex> lk(g_tt_mu);
 			want = g_tt_should_run;
 			user = g_tt_user;
 			key = g_tt_key;
+			signer = g_tt_signer;
 		}
 		if (!want || user.empty() || geseki::tiktok::Running())
 			continue;
@@ -1248,7 +1683,7 @@ void MaintenanceLoop()
 		obs_log(LOG_INFO, "geseki-bridge: (re)starting TikTok sidecar");
 		{
 			std::lock_guard<std::mutex> lk(g_tt_call_mu);
-			if (geseki::tiktok::Start(user, key, OnSidecarMessage))
+			if (geseki::tiktok::Start(user, signer, key, OnSidecarMessage))
 				failures = 0;
 			else
 				++failures;
@@ -1420,7 +1855,14 @@ void Start()
 	{
 		std::lock_guard<std::mutex> lk(g_status_mu);
 		g_tiktok_username = cfg.tiktok_username;
+		// A new session has no avatar yet; the sidecar reports one once the
+		// room is resolved.
+		g_tiktok_avatar.clear();
 	}
+
+	// Bring the local signer up first: the sidecar asks the signer for its
+	// limits the moment it connects, so it must already be listening.
+	StartSignServer(cfg.sign_server_port);
 
 	if (cfg.tiktok_autoconnect && !cfg.tiktok_username.empty())
 		StartSidecar(cfg.tiktok_username, cfg.tiktok_api_key);
@@ -1441,6 +1883,8 @@ void Stop()
 		std::lock_guard<std::mutex> lk(g_tt_call_mu);
 		geseki::tiktok::Stop();
 	}
+	// The sign server is ours: never leave an orphan Node behind.
+	StopSignServer();
 
 	// Wake every open socket so its recv() returns; the handlers then unwind.
 	{
@@ -1509,13 +1953,24 @@ void SaveConfig(const Config &cfg)
 	}
 	SaveConfigFile(cfg);
 
+	// The status payload reports g_tiktok_username, not the config, so a
+	// username changed here must be pushed into it. Otherwise the dashboard
+	// pill keeps showing the previous name until OBS restarts.
+	if (cfg.tiktok_username != old.tiktok_username) {
+		std::lock_guard<std::mutex> lk(g_status_mu);
+		g_tiktok_username = cfg.tiktok_username;
+		g_tiktok_avatar.clear();
+	}
 	if (cfg.tiktok_username != old.tiktok_username ||
-	    cfg.tiktok_api_key != old.tiktok_api_key) {
+	    cfg.tiktok_api_key != old.tiktok_api_key ||
+	    cfg.alt_connection != old.alt_connection) {
 		if (!cfg.tiktok_username.empty())
 			StartSidecar(cfg.tiktok_username, cfg.tiktok_api_key);
 		else
 			StopSidecar();
 	}
+	if (cfg.tiktok_username != old.tiktok_username)
+		Broadcast(BuildStatus(), "status");
 	if (cfg.port != old.port)
 		obs_log(LOG_WARNING, "geseki-bridge: port changed to %d; restart OBS to apply",
 			cfg.port);

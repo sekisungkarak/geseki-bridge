@@ -18,7 +18,11 @@ using MessageHandler = std::function<void(const std::string &line)>;
 // Starts the sidecar if the executable can be found next to the plugin.
 // Returns false (and logs) when the binary is missing — the rest of the bridge
 // keeps working, only TikTok stays unavailable.
-bool Start(const std::string &username, const std::string &apiKey, MessageHandler handler);
+// `signerUrl` points the TikTok client at the local sign server. Leave it
+// empty to use the alternative connection mode instead; `apiKey` is only
+// meaningful there, where it raises the signing rate limit.
+bool Start(const std::string &username, const std::string &signerUrl,
+           const std::string &apiKey, MessageHandler handler);
 
 // Stops the sidecar: asks it to quit, then kills it if it lingers.
 void Stop();

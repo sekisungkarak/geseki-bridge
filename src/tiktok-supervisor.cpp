@@ -103,7 +103,8 @@ void CloseIfValid(HANDLE &h)
 
 namespace geseki::tiktok {
 
-bool Start(const std::string &username, const std::string &apiKey, MessageHandler handler)
+bool Start(const std::string &username, const std::string &signerUrl,
+           const std::string &apiKey, MessageHandler handler)
 {
 	Stop();
 
@@ -178,8 +179,14 @@ bool Start(const std::string &username, const std::string &apiKey, MessageHandle
 	g_err_reader = std::thread(ErrReaderLoop);
 
 	if (!username.empty()) {
-		std::string json = "{\"cmd\":\"connect\",\"username\":\"" + username +
-				   "\",\"apiKey\":\"" + apiKey + "\"}";
+		std::string json = "{\"cmd\":\"connect\",\"username\":\"" + username + "\"";
+		// Omitted in the alternative connection mode, which is how the
+		// sidecar tells the two apart.
+		if (!signerUrl.empty())
+			json += ",\"signerUrl\":\"" + signerUrl + "\"";
+		if (!apiKey.empty())
+			json += ",\"apiKey\":\"" + apiKey + "\"";
+		json += "}";
 		Send(json);
 	}
 	return true;
@@ -248,7 +255,7 @@ bool Running()
 
 namespace geseki::tiktok {
 
-bool Start(const std::string &, const std::string &, MessageHandler)
+bool Start(const std::string &, const std::string &, const std::string &, MessageHandler)
 {
 	return false;
 }

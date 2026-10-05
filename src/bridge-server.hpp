@@ -12,6 +12,13 @@ struct Config {
 	std::string tiktok_username;
 	std::string tiktok_api_key;
 	bool tiktok_autoconnect = false;
+	// Alternative Connection Mode: sign through a remote signing service
+	// instead of the local sign server. Off by default; that service is
+	// subject to a shared rate limit, which tiktok_api_key can raise.
+	bool alt_connection = false;
+	// Port of the local sign server (needs Node.js on PATH and Chrome
+	// installed). Unused while the alternative mode is on.
+	int sign_server_port = 8080;
 };
 
 // Starts the server and the TikTok sidecar. Idempotent.
