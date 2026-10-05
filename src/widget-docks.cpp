@@ -54,6 +54,7 @@
 #include <QTimer>
 
 #include "settings-dialog.hpp"
+#include "backup-dialog.hpp"
 #endif
 
 namespace geseki::docks {
@@ -295,6 +296,11 @@ void OpenSettings()
 	geseki::ui::ShowSettingsDialog(obs_frontend_get_main_window());
 }
 
+void OpenBackup()
+{
+	geseki::ui::ShowBackupDialog(obs_frontend_get_main_window());
+}
+
 #endif // GESEKI_HAS_QT
 
 } // namespace
@@ -319,6 +325,9 @@ void Setup()
 
 	QAction *settings = root->addAction(obs_module_text("GesekiBridge.SettingsItem"));
 	QObject::connect(settings, &QAction::triggered, root, [] { OpenSettings(); });
+
+	QAction *backup = root->addAction(obs_module_text("GesekiBridge.BackupItem"));
+	QObject::connect(backup, &QAction::triggered, root, [] { OpenBackup(); });
 
 	obs_frontend_add_event_callback(OnFrontendEvent, nullptr);
 #endif

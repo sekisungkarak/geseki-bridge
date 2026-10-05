@@ -40,10 +40,11 @@ target_sources(
     src/smtc-winrt.cpp
     src/tiktok-supervisor.cpp
     src/widget-docks.cpp
+    src/backup.cpp
 )
 
 if(ENABLE_QT)
-  target_sources(${CMAKE_PROJECT_NAME} PRIVATE src/settings-dialog.cpp)
+  target_sources(${CMAKE_PROJECT_NAME} PRIVATE src/settings-dialog.cpp src/backup-dialog.cpp)
 endif()
 
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")

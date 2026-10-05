@@ -8,6 +8,7 @@
 #include <obs-module.h>
 #include <obs-frontend-api.h>
 
+#include "backup.hpp"
 #include "bridge-server.hpp"
 #include "plugin-support.hpp"
 #include "widget-docks.hpp"
@@ -26,6 +27,10 @@ bool obs_module_load(void)
 
 	geseki::bridge::Start();
 	geseki::docks::Setup();
+
+	// Snapshot before obs-browser opens its Local Storage: a leveldb file in
+	// use cannot be copied, so this must run at load, not on a timer.
+	geseki::backup::MaybeAutoBackup();
 
 	obs_log(LOG_INFO, "geseki-bridge ready");
 	return true;

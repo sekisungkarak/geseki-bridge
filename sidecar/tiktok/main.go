@@ -22,7 +22,7 @@ import (
 	gotiktoklive "github.com/steampoweredtaco/gotiktoklive"
 )
 
-const version = "0.2.0"
+const version = "0.3.0"
 
 // ---------------------------------------------------------------- stdio I/O
 
@@ -129,13 +129,22 @@ func handleConnect(c connectCmd) {
 // socket, an expired cursor) used to end the session for good: the sidecar
 // process stays alive, so the plugin's supervisor never restarted it and the
 // widget sat silent until the user reconnected by hand. We now retry with
-// exponential backoff and give up only when TikTok says the room is gone.
+// exponential backoff.
+//
+// "Not live" is NOT a dead end. Opening OBS before going live, or a stream
+// that simply ended, used to stop the session for good — and because the
+// process stayed alive the plugin never restarted it, so only an OBS restart
+// reconnected. The sidecar now waits and polls at a steady interval, so a
+// stream that starts later in the SAME OBS session connects by itself.
 const (
 	reconnectBaseDelay = 2 * time.Second
 	reconnectMaxDelay  = 30 * time.Second
 	// A session that stayed up at least this long is considered healthy, so the
 	// next drop restarts the backoff from the base instead of climbing further.
 	reconnectHealthyAfter = 30 * time.Second
+	// Steady poll while the streamer is not live yet (or a stream just ended),
+	// so the next stream is picked up without restarting OBS.
+	waitForLiveDelay = 30 * time.Second
 )
 
 // runSession tracks the room and reconnects when the socket drops. It returns
@@ -155,10 +164,21 @@ func runSession(ctx context.Context, cancel context.CancelFunc, tt *gotiktoklive
 		l, err := tt.TrackUser(username)
 		if err != nil {
 			if terminalTrackError(err) {
-				// The room is gone (stream ended) or the handle is wrong:
-				// there is nothing useful to retry.
+				// The handle does not resolve: retrying would only repeat the
+				// same failure, so stop and let the user fix the settings.
 				emitState("off", err.Error())
 				return
+			}
+			if notLiveError(err) {
+				// Not live right now (no room yet, or the room just ended).
+				// Poll steadily so a stream that starts later in the same OBS
+				// session connects without restarting OBS.
+				logf("not live: %v (waiting %s)", err, waitForLiveDelay)
+				emitState("connecting", "waiting for stream")
+				if !waitForLivePoll(ctx) {
+					return
+				}
+				continue
 			}
 			logf("track failed: %v (retry in %s)", err, delay)
 			if !sleepBackoff(ctx, &delay) {
@@ -239,13 +259,36 @@ func nextBackoff(cur time.Duration) time.Duration {
 	return next
 }
 
-// terminalTrackError reports whether a TrackUser failure means "do not retry":
-// the stream ended, or the username does not resolve. Every other error
-// (network, signer, rate limit) is treated as transient.
+// terminalTrackError reports whether a TrackUser failure means "stop for good":
+// the handle does not resolve, so retrying would only repeat the same failure.
+// "Not live yet" and "the stream ended" are NOT terminal (see notLiveError):
+// the streamer may go live later in the same OBS session, and giving up there
+// is what forced an OBS restart to reconnect.
 func terminalTrackError(err error) bool {
-	return errors.Is(err, gotiktoklive.ErrUserOffline) ||
-		errors.Is(err, gotiktoklive.ErrUserNotFound) ||
+	return errors.Is(err, gotiktoklive.ErrUserNotFound) ||
 		errors.Is(err, gotiktoklive.ErrUserInfoNotFound)
+}
+
+// notLiveError reports whether the failure only means the streamer is not live
+// right now: no room yet, or the room has ended. The sidecar keeps polling for
+// the next stream instead of giving up, so opening OBS before going live (or
+// after a stream ends) still connects by itself.
+func notLiveError(err error) bool {
+	return errors.Is(err, gotiktoklive.ErrUserOffline) ||
+		errors.Is(err, gotiktoklive.ErrLiveHasEnded)
+}
+
+// waitForLivePoll sleeps one steady interval, returning false when the context
+// was cancelled (a new connect, a disconnect, or quit).
+func waitForLivePoll(ctx context.Context) bool {
+	t := time.NewTimer(waitForLiveDelay)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
 }
 
 // ------------------------------------------------------------------- events
@@ -396,7 +439,19 @@ func normalizeComment(comment string, emotes []gotiktoklive.Emote) string {
 	return b.String()
 }
 
+// forwardable reports whether an event from the library should reach a widget.
+// TikTok replays recent chat when a socket (re)connects, and the vendored
+// library tags those frames IsHistory within a 15-minute window. The widgets
+// keep no dedupe, so forwarding a replay re-adds the same questions to the
+// queue on every reconnect — the "queue grows on its own" bug. Drop them here.
+func forwardable(ev gotiktoklive.Event) bool {
+	return !ev.IsHistory()
+}
+
 func handleEvent(ev gotiktoklive.Event) {
+	if !forwardable(ev) {
+		return
+	}
 	switch e := ev.(type) {
 
 	case gotiktoklive.ChatEvent:

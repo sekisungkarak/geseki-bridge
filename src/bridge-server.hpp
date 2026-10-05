@@ -20,6 +20,10 @@ void Start();
 // Stops the server, joins its threads and terminates the sidecar. Idempotent.
 void Stop();
 
+// Absolute path of this plugin's config directory
+// (...\plugin_config\geseki-bridge). Used by the backup engine.
+std::string ModuleConfigDir();
+
 // Current configuration, loaded from the plugin's config file.
 Config GetConfig();
 

@@ -1324,6 +1324,15 @@ void DiscoveryAcceptLoop()
 
 namespace geseki::bridge {
 
+std::string ModuleConfigDir()
+{
+	const std::string p = ConfigFilePath();
+	const size_t slash = p.find_last_of("\\/");
+	if (slash == std::string::npos)
+		return std::string();
+	return p.substr(0, slash);
+}
+
 void Start()
 {
 	if (g_running.exchange(true))

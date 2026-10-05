@@ -34,13 +34,13 @@ The plugin also answers a small HTTP surface (outside the upgrade):
 `GET /health` returns:
 
 ```json
-{ "ok": true, "bridge": "geseki-bridge/0.2.0", "protocol": 1 }
+{ "ok": true, "bridge": "geseki-bridge/0.3.0", "protocol": 1 }
 ```
 
 `GET /bridge-port` returns:
 
 ```json
-{ "ok": true, "bridge": "geseki-bridge/0.2.0", "protocol": 1, "wsPort": 47800, "discoveryPort": 47800 }
+{ "ok": true, "bridge": "geseki-bridge/0.3.0", "protocol": 1, "wsPort": 47800, "discoveryPort": 47800 }
 ```
 
 ### Port discovery
@@ -78,7 +78,7 @@ Sent once, immediately after the socket opens.
 {
   "type": "hello",
   "protocol": 1,
-  "bridge": "geseki-bridge/0.2.0",
+  "bridge": "geseki-bridge/0.3.0",
   "capabilities": ["tiktok", "nowplaying"]
 }
 ```
@@ -106,9 +106,15 @@ drops (network blip, TikTok closing the socket, an expired cursor). It retries
 with exponential backoff — 2 s, 4 s, 8 s, 16 s, then 30 s — and reports
 `connecting` / `reconnecting` while it does. A session that stayed up for at
 least 30 s resets the backoff, so a long, healthy session reconnects quickly
-after a single blip. It stops only when TikTok reports the room is gone
-(stream ended) or the handle does not resolve, and then reports `off`. A new
-`tiktok.connect`, a `tiktok.disconnect`, or `quit` cancels a pending retry.
+after a single blip.
+
+**Not live is not a dead end.** When the streamer is not live yet (opening OBS
+before going live) or a stream has just ended, the sidecar reports
+`connecting` / `waiting for stream` and polls every 30 s, so a stream that
+starts later in the **same** OBS session connects by itself — no OBS restart.
+It stops for good (`off`) only when the handle does not resolve, since retrying
+that would repeat the same failure. A new `tiktok.connect`, a `tiktok.disconnect`,
+or `quit` cancels a pending retry or wait.
 
 ### 2.3 `tiktok`
 
@@ -224,7 +230,7 @@ REST payload used, so existing widget code keeps working.
 {
   "type": "nowplaying",
   "data": {
-    "app_version": "0.2.0",
+    "app_version": "0.3.0",
     "current_session_id": "Spotify.exe",
     "sessions": [
       {
