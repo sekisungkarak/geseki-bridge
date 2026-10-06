@@ -1044,6 +1044,28 @@ async function handleRequest(req, res) {
   }
 
   try {
+    // Login status: the chat endpoint (/webcast/im/fetch/) answers 403 unless
+    // the profile holds a real TikTok session, and "not signed in" looks
+    // exactly like a signature fault from the outside. The settings dialog
+    // asks this before telling the user to sign in.
+    if (url.pathname === "/login-status") {
+      const LOGIN_COOKIES = ["sessionid", "sessionid_ss", "sid_tt"];
+      let names = [];
+      try {
+        await initBrowser();
+        const list = await page.cookies();
+        names = list.map((c) => c.name);
+      } catch (e) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ signedIn: false, error: String(e && e.message ? e.message : e) }));
+        return;
+      }
+      const found = LOGIN_COOKIES.filter((k) => names.includes(k));
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ signedIn: found.length > 0, cookies: found, cookieCount: names.length }));
+      return;
+    }
+
     // Health check
     if (url.pathname === "/health") {
       const sessionAge = lastInitTime

@@ -90,5 +90,50 @@ child.unref();
 
 console.log("Chrome started (pid %d).", child.pid);
 console.log();
+
+// --wait: poll the profile's cookie database until a TikTok session cookie
+// appears, then exit 0. The plugin uses this to know when to restart the
+// signer, instead of telling the user to do it by hand.
+if (process.argv.includes("--wait")) {
+  const cookieDb = path.join(PROFILE_DIR, "Default", "Network", "Cookies");
+  const DEADLINE = Date.now() + 10 * 60 * 1000;
+  const LOGIN_COOKIES = ["sessionid", "sessionid_ss", "sid_tt"];
+
+  console.log("Waiting for sign-in (up to 10 minutes)...");
+
+  // The cookie DB is locked by Chrome, so read it read-only and scan the raw
+  // bytes for the cookie name — enough to answer "is there a session yet?"
+  // without an SQLite dependency.
+  const hasSession = () => {
+    try {
+      if (!fs.existsSync(cookieDb)) return false;
+      const buf = fs.readFileSync(cookieDb);
+      return LOGIN_COOKIES.some((n) => buf.includes(Buffer.from(n)));
+    } catch (e) {
+      return false;
+    }
+  };
+
+  let ok = false;
+  while (Date.now() < DEADLINE) {
+    await new Promise((r) => setTimeout(r, 3000));
+    if (hasSession()) {
+      ok = true;
+      // Give Chrome a moment to flush the rest of the session cookies.
+      await new Promise((r) => setTimeout(r, 4000));
+      break;
+    }
+    process.stdout.write(".");
+  }
+
+  console.log();
+  if (ok) {
+    console.log("Signed in. You can close Chrome now.");
+    process.exit(0);
+  }
+  console.log("Timed out before a TikTok session appeared.");
+  process.exit(1);
+}
+
 console.log("After you are logged in, close Chrome completely, then restart OBS");
 console.log("so the signer picks up the session.");

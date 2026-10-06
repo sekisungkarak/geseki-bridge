@@ -38,4 +38,16 @@ Config GetConfig();
 // port needs a restart; the TikTok credentials do not).
 void SaveConfig(const Config &cfg);
 
+// True when the local signer's browser profile holds a TikTok login. The chat
+// endpoint answers 403 without one, so the settings dialog surfaces this
+// rather than letting the user guess. Returns false when the signer is not
+// reachable (nothing to report).
+bool SignerSignedIn(int signPort);
+
+// Opens Chrome on the signer's profile so the user can sign in to TikTok. The
+// signer is stopped first (Chrome allows one instance per profile) and
+// restarted once the user closes the login window. Returns false when Node or
+// the sign-in script is missing.
+bool StartSignInFlow(int signPort);
+
 } // namespace geseki::bridge
