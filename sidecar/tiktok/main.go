@@ -22,7 +22,7 @@ import (
 	gotiktoklive "github.com/steampoweredtaco/gotiktoklive"
 )
 
-const version = "0.5.0"
+const version = "0.5.1"
 
 // ---------------------------------------------------------------- stdio I/O
 
@@ -213,6 +213,17 @@ func runSession(ctx context.Context, cancel context.CancelFunc, tt *gotiktoklive
 				}
 				continue
 			}
+			if blockedError(err) {
+				// Blokir tidak akan hilang dengan menunggu: beri tahu sekali,
+				// lalu tetap mencoba dengan jeda panjang supaya koneksi pulih
+				// sendiri bila TikTok melonggarkan.
+				logf("blocked by TikTok: %v", err)
+				emitState("error", "TikTok refused the connection \u2014 the local signer needs updating (not a quota issue)")
+				if !sleepBackoff(ctx, &delay) {
+					return
+				}
+				continue
+			}
 			logf("track failed: %v (retry in %s)", err, delay)
 			if !sleepBackoff(ctx, &delay) {
 				return
@@ -339,6 +350,27 @@ func terminalTrackError(err error) bool {
 func notLiveError(err error) bool {
 	return errors.Is(err, gotiktoklive.ErrUserOffline) ||
 		errors.Is(err, gotiktoklive.ErrLiveHasEnded)
+}
+
+// blockedError reports whether TikTok (or the signer) refused the request
+// instead of merely failing. Retrying forever is useless here: the answer
+// will not change until the signing stack is updated, so the widget must
+// say so instead of sitting on "reconnecting".
+//
+// gotiktoklive returns ErrIPBlockedOrBanned for an HTTP 403, which is what
+// TikTok answers for /webcast/im/fetch when the X-Gnarly signature is stale
+// (the other webcast endpoints keep working, so this is not an IP ban).
+func blockedError(err error) bool {
+	var blocked *gotiktoklive.ErrIPBlockedOrBanned
+	if errors.As(err, &blocked) {
+		return true
+	}
+	// Jaring pengaman: adapter lama memetakan 403 menjadi 502, dan sebagian
+	// jalur membungkusnya tanpa tipe. Cocokkan pada teksnya juga.
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "status code 403") ||
+		strings.Contains(msg, "status code 502") ||
+		strings.Contains(msg, "ip or country might be blocked")
 }
 
 // waitForLivePoll sleeps one steady interval, returning false when the context

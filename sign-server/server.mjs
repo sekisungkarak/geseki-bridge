@@ -938,6 +938,76 @@ function parseResult(url, userAgent = null) {
 }
 
 /**
+ * Penanganan penolakan webcast.
+ *
+ * TikTok menjawab /webcast/im/fetch dengan 403 (atau 200 tanpa isi) ketika
+ * sesi/fingerprint ditandai. Berdasarkan pengukuran, penolakan ini BERSIFAT
+ * SEMENTARA dan pulih sendiri setelah beberapa menit tanpa permintaan
+ * (endpoint lain seperti room/info tetap 200 sepanjang waktu).
+ *
+ * Karena itu sesi TIDAK dibangun ulang pada penolakan pertama: membangun
+ * ulang browser hanya menambah permintaan, memperpanjang blokir, dan tidak
+ * memperbaiki apa pun. Rebuild baru dilakukan bila penolakan terjadi
+ * berturut-turut dalam jumlah yang menandakan masalah sesi (bukan sekadar
+ * jeda sementara), dan dibatasi cooldown panjang.
+ */
+const BLOCKED_STREAK_BEFORE_REBUILD = 5;
+const BLOCKED_REBUILD_COOLDOWN_MS = 10 * 60_000;
+let blockedStreak = 0;
+let lastBlockedRebuildAt = 0;
+let blockedRebuildInFlight = null;
+
+function noteBlockedResponse(reason) {
+  blockedStreak += 1;
+  console.log(
+    `[Server] ${reason} (berturut-turut: ${blockedStreak}/${BLOCKED_STREAK_BEFORE_REBUILD})`,
+  );
+
+  if (blockedStreak < BLOCKED_STREAK_BEFORE_REBUILD) return null;
+  if (blockedRebuildInFlight) return blockedRebuildInFlight;
+
+  const now = Date.now();
+  if (now - lastBlockedRebuildAt < BLOCKED_REBUILD_COOLDOWN_MS) return null;
+
+  lastBlockedRebuildAt = now;
+  blockedStreak = 0;
+  console.log("[Server] Penolakan berulang — membangun ulang sesi signer");
+  blockedRebuildInFlight = (async () => {
+    try {
+      await closeBrowser();
+      await initBrowser();
+      console.log("[Server] Sesi signer dibangun ulang");
+    } catch (e) {
+      console.error("[Server] Rebuild gagal:", e.message);
+    } finally {
+      blockedRebuildInFlight = null;
+    }
+  })();
+  return blockedRebuildInFlight;
+}
+
+// Balasan sehat membuktikan sesi masih diterima: reset hitungan.
+function noteHealthyResponse() {
+  if (blockedStreak !== 0) blockedStreak = 0;
+}
+
+/**
+ * A blocked webcast response. TikTok answers either 403 or 200-with-an-empty
+ * body (its own way of saying "detected"); both mean the signature/session is
+ * no longer accepted. A valid reply carries a protobuf body of tens of KB.
+ */
+function isBlockedWebcastResponse(status, bodyLength) {
+  // 403 adalah jawaban blokir yang eksplisit.
+  if (status === 403) return true;
+  // 200 tanpa isi: cara TikTok menyatakan "terdeteksi" tanpa status error.
+  // Balasan sah selalu protobuf puluhan KB, jadi panjang 0 tidak ambigu.
+  // Balasan JSON kecil TIDAK dihitung blokir: room_id yang tidak berlaku
+  // juga menjawab JSON pendek, dan itu bukan alasan membangun ulang sesi.
+  if (status === 200 && bodyLength === 0) return true;
+  return false;
+}
+
+/**
  * HTTP Request Handler
  */
 async function handleRequest(req, res) {
@@ -1073,13 +1143,23 @@ async function handleRequest(req, res) {
 
       console.log("[Server] /webcast/fetch ->", status, body.length, "bytes");
 
+      if (isBlockedWebcastResponse(status, body.length)) {
+        noteBlockedResponse(`Respons webcast ditolak (${status}, ${body.length} bytes)`);
+      } else {
+        noteHealthyResponse();
+      }
+
       const outHeaders = {
         "Content-Type": "application/octet-stream",
         "Access-Control-Allow-Origin": "*",
       };
       if (ttCookie) outHeaders["X-Set-TT-Cookie"] = ttCookie;
       else if (cookies) outHeaders["X-Set-TT-Cookie"] = cookies;
-      res.writeHead(status === 200 ? 200 : 502, outHeaders);
+      // Teruskan status ASLI TikTok, jangan dipetakan ke 502. Pemetaan 403->502
+      // dulu menyamarkan penolakan TikTok sebagai "gateway error", sehingga
+      // klien tidak bisa membedakan blokir dari gangguan jaringan — dan
+      // gotiktoklive kehilangan kemampuan mengenali 403 (ErrIPBlockedOrBanned).
+      res.writeHead(status, outHeaders);
       res.end(body);
       return;
     }
