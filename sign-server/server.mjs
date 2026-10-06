@@ -242,6 +242,18 @@ async function initBrowser() {
       "--disable-blink-features=AutomationControlled",
       "--disable-gpu",
       "--window-size=1920,1080",
+      // Chrome otherwise fills the profile with background downloads
+      // (component_crx_cache, optimization-guide models, the on-device TTS
+      // engine) — over 100 MB the signer never uses. Turning them off keeps
+      // the login profile small and the signer light.
+      "--disable-component-update",
+      "--disable-background-networking",
+      "--disable-default-apps",
+      "--disable-sync",
+      "--disable-breakpad",
+      "--disable-speech-api",
+      "--no-service-autorun",
+      "--disable-features=OptimizationHints,OptimizationGuideModelDownloading,MediaRouter,Translate,InterestFeedContentSuggestions",
     ];
 
     // Add proxy if enabled

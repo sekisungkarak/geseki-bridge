@@ -218,7 +218,11 @@ func runSession(ctx context.Context, cancel context.CancelFunc, tt *gotiktoklive
 				// lalu tetap mencoba dengan jeda panjang supaya koneksi pulih
 				// sendiri bila TikTok melonggarkan.
 				logf("blocked by TikTok: %v", err)
-				emitState("error", "TikTok refused the connection \u2014 the local signer needs updating (not a quota issue)")
+				// The two real causes, in the order users hit them: the signer has
+				// no logged-in TikTok session (TikTok requires one for the chat
+				// endpoint), or its signing SDK has fallen behind. Say both —
+				// "needs updating" alone sends people after the wrong fix.
+				emitState("error", "TikTok refused the connection — sign in to TikTok in the signer's browser profile (see sign-server/README.md), or update the local signer")
 				if !sleepBackoff(ctx, &delay) {
 					return
 				}
