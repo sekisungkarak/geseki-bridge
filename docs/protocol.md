@@ -342,7 +342,7 @@ Sidecar protocol (internal, not public API):
 
 | Direction | Message |
 | --- | --- |
-| plugin → sidecar | `{"cmd":"connect","username":"…","signerUrl":"http://127.0.0.1:8080"}` (local signer, default) |
+| plugin → sidecar | `{"cmd":"connect","username":"…","signerUrl":"http://127.0.0.1:8090"}` (local signer, default) |
 | plugin → sidecar | `{"cmd":"connect","username":"…","apiKey":"…"}` (Alternative Connection Mode) |
 | plugin → sidecar | `{"cmd":"disconnect"}` |
 | plugin → sidecar | `{"cmd":"quit"}` |

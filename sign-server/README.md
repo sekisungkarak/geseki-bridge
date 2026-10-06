@@ -20,7 +20,7 @@ third-party service, no quota.
 The sidecar connects to a live room through this server, end to end:
 
 ```
-[tiktok] using signer http://127.0.0.1:8080
+[tiktok] using signer http://127.0.0.1:8090
 {"ev":"state","state":"connecting"}
 [tiktok] info: [Connected to websocket]
 {"ev":"state","state":"connected"}
@@ -81,7 +81,7 @@ Environment (`.env`):
 
 | Key | Meaning |
 |---|---|
-| `PORT` | HTTP port, default `8080` |
+| `PORT` | HTTP port, default `8090` |
 | `PUPPETEER_EXECUTABLE_PATH` | Chrome to drive |
 | `PROXY_ENABLED`, `PROXY_HOST`, `PROXY_USER`, `PROXY_PASS` | optional outbound proxy |
 

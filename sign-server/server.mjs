@@ -12,7 +12,7 @@
  * - GET  /restart   - Restart browser session
  *
  * Environment Variables:
- * - PORT          - Server port (default: 8080)
+ * - PORT          - Server port (default: 8090)
  * - PROXY_ENABLED - Enable proxy (default: false)
  * - PROXY_HOST    - Proxy host:port (e.g., "proxy.example.com:8080")
  * - PROXY_USER    - Proxy username
@@ -31,7 +31,7 @@ import { encode as encodeXGnarly } from "./xgnarly.mjs";
 puppeteer.use(StealthPlugin());
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PORT = process.env.PORT || 8080;
+const PORT = process.env.PORT || 8090;
 
 // Custom user data directory to avoid filling /tmp
 const USER_DATA_DIR = path.join(__dirname, ".chrome-profile");
