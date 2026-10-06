@@ -242,6 +242,14 @@ func (l *Live) getRoomData() error {
 	if err != nil {
 		return err
 	}
+	// TikTok menjawab 200 dengan body KOSONG ketika sesi/fingerprint ditandai
+	// (batas per-IP). Itu cara TikTok menyatakan penolakan tanpa status error,
+	// dan tanpa pemeriksaan ini penolakan tampak seperti gangguan jaringan
+	// biasa: sidecar memakai ladder pendek dan menembak tiap 30 detik, sehingga
+	// batasnya tidak pernah sembuh. Balasan sah selalu protobuf puluhan KB.
+	if len(body) == 0 {
+		return &ErrIPBlockedOrBanned{}
+	}
 	ttsCookie := headers.Get("X-Set-TT-Cookie")
 	cookies, err := http.ParseCookie(ttsCookie)
 	if err != nil {
@@ -270,6 +278,13 @@ func (l *Live) getRoomData() error {
 			l.wsParams[k] = v
 		}
 
+	}
+	// Sebuah balasan yang diterima SELALU membawa PushServer. Tanpa itu tidak
+	// ada websocket untuk dihubungi, dan siklusnya berhenti pada
+	// "cannot upgrade connection without a wsURL" — gejala yang sama dengan
+	// penolakan di atas, jadi perlakukan sebagai penolakan juga.
+	if l.wsURL == "" {
+		return &ErrIPBlockedOrBanned{}
 	}
 
 	for _, msg := range rsp.Messages {

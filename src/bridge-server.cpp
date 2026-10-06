@@ -1021,6 +1021,22 @@ std::atomic<bool> g_signer_ours{false};
 // a crash. TerminateProcess on the cmd.exe handle alone left node.exe and its
 // Chrome children behind, and the next OBS session adopted those orphans.
 HANDLE g_signer_job = nullptr;
+// Port the sign server we started or adopted listens on, so StopSignServer can
+// reach it. Atomic because StartSignServer records it from the load path while
+// Stop() reads it from the shutdown path.
+std::atomic<int> g_signer_port{0};
+// True when the server on the port is a Geseki sign server we recognise (its
+// /health answered with our build). A foreign process that merely holds the
+// port is not one, and must never be touched.
+std::atomic<bool> g_signer_known{false};
+// PID of the OBS that launched an adopted sign server, from its /health. 0
+// when unknown. A later OBS leaves that server alone while the process is
+// alive, and only lets an orphan (its owner has exited) expire.
+std::atomic<unsigned long> g_signer_owner_pid{0};
+// How long a sign server may outlive OBS before it shuts itself down. Long
+// enough that a quick OBS restart reuses the warm session, short enough that a
+// forgotten one does not linger as an orphan.
+const int kSignerGraceMs = 3 * 60 * 1000;
 
 // Directory holding the plugin DLL — sign-server/ sits beside it.
 std::string ModuleDir()
@@ -1117,6 +1133,21 @@ bool SignServerResponding(int port)
 	return up;
 }
 
+// True when `pid` names a running process. Tells a sign server that another
+// OBS is still using from one whose owner has exited (an orphan we may let go).
+bool ProcessAlive(unsigned long pid)
+{
+	if (pid == 0)
+		return false;
+	HANDLE h = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE,
+			       static_cast<DWORD>(pid));
+	if (!h)
+		return false;
+	const DWORD w = WaitForSingleObject(h, 0);
+	CloseHandle(h);
+	return w == WAIT_TIMEOUT;
+}
+
 // Job that owns the sign server tree. KILL_ON_JOB_CLOSE means the tree dies
 // when this process exits, including on a crash where no cleanup code runs.
 HANDLE EnsureSignerJob()
@@ -1137,6 +1168,20 @@ HANDLE EnsureSignerJob()
 	}
 	g_signer_job = job;
 	return job;
+}
+
+// Drops KILL_ON_JOB_CLOSE from the sign server job. Closing a job whose limit
+// no longer asks for a kill leaves its processes running, which is what lets
+// the sign server survive a normal OBS exit. A crash still tears the tree down
+// because no cleanup code runs to clear the flag.
+void ClearKillOnJobClose()
+{
+	if (!g_signer_job)
+		return;
+	JOBOBJECT_EXTENDED_LIMIT_INFORMATION info{};
+	info.BasicLimitInformation.LimitFlags = 0;
+	SetInformationJobObject(g_signer_job, JobObjectExtendedLimitInformation,
+				&info, sizeof(info));
 }
 
 // PID of the process listening on `port`, or 0. Used only to replace a sign
@@ -1246,7 +1291,7 @@ std::string DecodeChunked(const std::string &in)
 // Asks the sign server on `port` for /health. True when a sign server answers
 // with status "ok". `build` receives the version it was launched for; empty
 // means a server from before version tagging, i.e. certainly stale.
-bool ProbeSignServerHealth(int port, std::string *build)
+bool ProbeSignServerHealth(int port, std::string *build, unsigned long *owner_pid = nullptr)
 {
 	Socket s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 	if (s == kInvalidSocket)
@@ -1309,36 +1354,51 @@ bool ProbeSignServerHealth(int port, std::string *build)
 		const auto *b = v.find("build");
 		*build = b ? b->as_string() : std::string();
 	}
+	if (owner_pid) {
+		const auto *o = v.find("ownerPid");
+		*owner_pid = o ? static_cast<unsigned long>(o->as_int(0)) : 0UL;
+	}
 	return true;
 }
 
-// Fire-and-forget: asks the sign server to rebuild its browser session. An
-// adopted server may have run for hours with a stale or rate-limited Chrome;
-// this gives the user what a restart would, without losing the process.
-void RequestSignServerRestart(int port)
+// Asks the sign server to shut itself down after `ms` unless another request
+// arrives first. Synchronous, and returns whether the server acknowledged: the
+// caller must know the outcome before it lets go of the process. This is what
+// lets a warm sign server outlive a normal OBS exit (so a quick reopen reuses
+// it with no fresh SDK warm-up against TikTok) without becoming an orphan.
+bool RequestSignServerGrace(int port, int ms)
 {
-	std::thread([port] {
-		Socket s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-		if (s == kInvalidSocket)
-			return;
-		DWORD tv = 15000;
-		setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char *>(&tv), sizeof(tv));
-		setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char *>(&tv), sizeof(tv));
-		sockaddr_in addr{};
-		addr.sin_family = AF_INET;
-		addr.sin_port = htons(static_cast<u_short>(port));
-		addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-		if (connect(s, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) == 0) {
-			const std::string req =
-				"GET /restart HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
-			SendAll(s, req.data(), req.size());
+	Socket s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+	if (s == kInvalidSocket)
+		return false;
+	DWORD tv = 5000;
+	setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char *>(&tv), sizeof(tv));
+	setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char *>(&tv), sizeof(tv));
+	sockaddr_in addr{};
+	addr.sin_family = AF_INET;
+	addr.sin_port = htons(static_cast<u_short>(port));
+	addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	bool ok = false;
+	if (connect(s, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) == 0) {
+		const std::string req = "GET /grace?ms=" + std::to_string(ms) +
+			" HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
+		if (SendAll(s, req.data(), req.size())) {
+			std::string resp;
 			char buf[1024];
-			// Drain so the server finishes its work before we drop the socket.
-			while (recv(s, buf, static_cast<int>(sizeof(buf)), 0) > 0) {
+			for (;;) {
+				const int r = recv(s, buf, static_cast<int>(sizeof(buf)), 0);
+				if (r <= 0)
+					break;
+				resp.append(buf, static_cast<size_t>(r));
+				if (resp.size() > 16 * 1024)
+					break;
 			}
+			// A 200 status line means the timer is armed.
+			ok = resp.rfind("HTTP/1.1 200", 0) == 0;
 		}
-		CloseSocket(s);
-	}).detach();
+	}
+	CloseSocket(s);
+	return ok;
 }
 
 // Launches `node server.mjs` from sign-server/. Returns false (and logs) when
@@ -1354,12 +1414,16 @@ bool StartSignServer(int port)
 	// stale server would be reused for the rest of the machine's uptime.
 	if (SignServerResponding(port)) {
 		std::string build;
-		if (!ProbeSignServerHealth(port, &build)) {
+		unsigned long owner_pid = 0;
+		if (!ProbeSignServerHealth(port, &build, &owner_pid)) {
 			// Busy, but not answering /health as a sign server: a foreign app,
 			// or a server still coming up. Adopt it rather than risk killing
 			// something that is not ours.
 			g_signer_up.store(true);
 			g_signer_ours.store(false);
+			g_signer_known.store(false);
+			g_signer_owner_pid.store(0);
+			g_signer_port = port;
 			obs_log(LOG_WARNING,
 				"geseki-bridge: port %d is busy but does not answer /health; reusing it as-is",
 				port);
@@ -1371,10 +1435,23 @@ bool StartSignServer(int port)
 			obs_log(LOG_INFO,
 				"geseki-bridge: reusing the sign server already on port %d (build %s)",
 				port, build.c_str());
-			// An adopted session may have run for hours (its Chrome can be
-			// stale or rate-limited). Rebuild the browser so the user gets
-			// what a restart would give them.
-			RequestSignServerRestart(port);
+			// Do NOT rebuild the browser here. A restart re-warms the SDK
+			// against TikTok, and that is traffic from the user's IP, which
+			// TikTok rate-limits per address — the very thing that made
+			// restarting OBS hit the limit. A sign server only lives long
+			// enough to be adopted while its grace window is open, so it is
+			// minutes old at most: its Chrome is warm, not stale.
+			g_signer_known.store(true);
+			g_signer_owner_pid.store(owner_pid);
+			g_signer_port = port;
+			if (owner_pid && ProcessAlive(owner_pid))
+				obs_log(LOG_INFO,
+					"geseki-bridge: adopted the warm sign server on port %d (another OBS owns it, pid %lu)",
+					port, owner_pid);
+			else
+				obs_log(LOG_INFO,
+					"geseki-bridge: adopted the warm sign server on port %d (build %s)",
+					port, build.c_str());
 			return true;
 		}
 		obs_log(LOG_WARNING,
@@ -1424,6 +1501,8 @@ bool StartSignServer(int port)
 	// (a malformed one fails with error 87 and no explanation).
 	std::wstring cmd = L"cmd.exe /c \"set PORT=" + std::to_wstring(port) +
 			   L" && set GESEKI_BUILD=" + Utf8ToWide(GESEKI_BRIDGE_VERSION) +
+			   L" && set GESEKI_OWNER_PID=" +
+			   std::to_wstring(GetCurrentProcessId()) +
 			   L" && node \"server.mjs\"\"";
 	std::vector<wchar_t> cmd_buf(cmd.begin(), cmd.end());
 	cmd_buf.push_back(L'\0');
@@ -1463,6 +1542,9 @@ bool StartSignServer(int port)
 	}
 	g_signer_up.store(true);
 	g_signer_ours.store(true);
+	g_signer_known.store(true);
+	g_signer_owner_pid.store(GetCurrentProcessId());
+	g_signer_port = port;
 	obs_log(LOG_INFO, "geseki-bridge: local sign server started on port %d", port);
 	return true;
 }
@@ -1470,27 +1552,76 @@ bool StartSignServer(int port)
 void StopSignServer()
 {
 	std::lock_guard<std::mutex> lk(g_signer_mu);
-	// Never kill an adopted server: it belongs to another session (or to a
-	// manual run) and killing it would break whoever is using it.
-		if (g_signer_proc && g_signer_ours.load()) {
-		// Closing the job kills the WHOLE tree — cmd.exe, node.exe and every
-		// Chrome child. TerminateProcess on the cmd.exe handle alone left the
-		// rest running, which is how the orphan sign server was born.
-		const DWORD pid = GetProcessId(g_signer_proc);
+
+	// A normal OBS exit does NOT kill the sign server: it is asked to shut
+	// itself down after kSignerGraceMs, and a new OBS that opens within that
+	// window adopts the warm browser session instead of warming a fresh one.
+	// Warming up means real requests to TikTok from the user's IP, and TikTok
+	// rate-limits per address — exactly why restarting OBS hit the limit while
+	// staying inside one session did not. When the request cannot be delivered
+	// we fall back to the old hard kill, so a sign server is never left behind
+	// for good.
+	//
+	// An adopted server may belong to another OBS that is still running, or
+	// be an orphan whose owner has exited. A live owner's server is left
+	// strictly alone — arming a grace timer on it would kill it mid-session.
+	// An orphan may be let go: it is a Geseki sign server nobody is using.
+	const bool ours = g_signer_ours.load();
+	const bool orphan = !ours && g_signer_known.load() &&
+			    !ProcessAlive(g_signer_owner_pid.load());
+	if (!ours && !orphan) {
+		g_signer_up.store(false);
+		g_signer_port = 0;
+		return;
+	}
+
+	const bool armed = RequestSignServerGrace(g_signer_port, kSignerGraceMs);
+	if (!armed) {
+		// The server did not acknowledge, so it cannot be trusted to stop by
+		// itself. Fall back to the hard kill: a sign server must never be
+		// left behind for good.
+		if (g_signer_proc) {
+			// Closing the job kills the WHOLE tree — cmd.exe, node.exe and
+			// every Chrome child. TerminateProcess on the cmd.exe handle
+			// alone left the rest running, which is how the orphan was born.
+			const DWORD pid = GetProcessId(g_signer_proc);
+			if (g_signer_job) {
+				CloseHandle(g_signer_job);
+				g_signer_job = nullptr;
+			}
+			// Kill the tree explicitly as well. Closing the job already does
+			// it, but AssignProcessToJobObject fails when OBS itself runs
+			// inside a job, and then the children would survive the cmd.exe
+			// termination.
+			KillProcessTree(pid);
+			TerminateProcess(g_signer_proc, 0);
+			CloseHandle(g_signer_proc);
+			g_signer_proc = nullptr;
+		}
+	} else {
+		// Let go without killing. Clearing KILL_ON_JOB_CLOSE first is what
+		// lets the tree outlive this process; closing a job that still asks
+		// for a kill would tear it down on the spot. An adopted server sits
+		// in someone else's job, which we must not touch.
+		if (ours)
+			ClearKillOnJobClose();
+		if (g_signer_proc) {
+			CloseHandle(g_signer_proc);
+			g_signer_proc = nullptr;
+		}
 		if (g_signer_job) {
 			CloseHandle(g_signer_job);
 			g_signer_job = nullptr;
 		}
-		// Kill the tree explicitly as well. Closing the job already does it,
-		// but AssignProcessToJobObject fails when OBS itself runs inside a
-		// job, and then the children would survive the cmd.exe termination.
-		KillProcessTree(pid);
-		TerminateProcess(g_signer_proc, 0);
-		CloseHandle(g_signer_proc);
-		g_signer_proc = nullptr;
+		obs_log(LOG_INFO,
+			"geseki-bridge: sign server shuts itself down in %d s unless OBS returns",
+			kSignerGraceMs / 1000);
 	}
 	g_signer_up.store(false);
 	g_signer_ours.store(false);
+	g_signer_known.store(false);
+	g_signer_owner_pid.store(0);
+	g_signer_port = 0;
 }
 
 void StartSidecar(const std::string &username, const std::string &apiKey)

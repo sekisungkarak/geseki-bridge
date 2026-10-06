@@ -10,6 +10,7 @@ import (
 	"time"
 
 	gotiktoklive "github.com/steampoweredtaco/gotiktoklive"
+	pkgerrors "github.com/pkg/errors"
 )
 
 // replayChat wraps a real ChatEvent but reports IsHistory()==true, the shape
@@ -132,6 +133,42 @@ func TestBlockedBackoffLadder(t *testing.T) {
 	if blockedGiveUpAfter != len(steps) {
 		t.Errorf("blockedGiveUpAfter = %d, want len(steps) = %d",
 			blockedGiveUpAfter, len(steps))
+	}
+}
+
+// TestBlockedError: a refusal must be recognised however it arrives — typed,
+// as a pointer, or wrapped by errors.Wrap on the way out of the library. This
+// is what selects the long refusal ladder instead of the short reconnect one;
+// when it misses, the sidecar keeps firing every 30s and the limit never
+// clears. The text fallbacks cover an adapter that mapped 403 to 502.
+func TestBlockedError(t *testing.T) {
+	blocked := []error{
+		gotiktoklive.ErrIPBlockedOrBanned{},
+		&gotiktoklive.ErrIPBlockedOrBanned{},
+		pkgerrors.Wrap(&gotiktoklive.ErrIPBlockedOrBanned{}, "Failed to sign request"),
+		errors.New("received status code 403"),
+		errors.New("received status code 502"),
+		errors.New("your IP or country might be blocked by TikTok"),
+	}
+	for _, err := range blocked {
+		if !blockedError(err) {
+			t.Errorf("blockedError(%v) = false, want true", err)
+		}
+	}
+	// An empty body / missing push server is how TikTok says "detected" without
+	// a status code: live.go turns both into ErrIPBlockedOrBanned, so the
+	// wrapper the caller sees must still classify as a refusal.
+	transient := []error{
+		errors.New("failed to read websocket from server: EOF"),
+		gotiktoklive.ErrUserOffline,
+		gotiktoklive.ErrLiveHasEnded,
+		gotiktoklive.ErrUserNotFound,
+		errors.New("cannot upgrade connection without a wsURL"),
+	}
+	for _, err := range transient {
+		if blockedError(err) {
+			t.Errorf("blockedError(%v) = true, want false (not a refusal)", err)
+		}
 	}
 }
 

@@ -23,6 +23,8 @@ import http from "http";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { createRequire } from "module";
+const require = createRequire(import.meta.url);
 import puppeteer from "puppeteer-extra";
 import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import { encode as encodeXGnarly } from "./xgnarly.mjs";
@@ -37,6 +39,22 @@ const PORT = process.env.PORT || 8090;
 // orphan is never replaced, so a stale one would be reused indefinitely.
 // Empty means "started by hand or by a build that predates this field".
 const BUILD = (process.env.GESEKI_BUILD || "").trim();
+// PID of the OBS that launched us, so a later OBS can tell a live session
+// (leave it alone) from an orphan whose owner is gone (safe to adopt and
+// later let expire). 0 when unknown, e.g. a manual run.
+const OWNER_PID = Number(process.env.GESEKI_OWNER_PID) || 0;
+
+// TikTok mematikan /webcast/im/fetch/ (balas 200 + body kosong) sehingga
+// jalur tanda-tangan lama tidak bisa menghasilkan PushServer lagi.
+// /webcast/rooms/{roomId}/connect mengembalikan protobuf
+// ProtoMessageFetchResult yang SAMA (PushServer, cursor, routeParamsMap,
+// messages), tanpa tanda tangan — jadi sidecar Go tidak perlu diubah.
+// Arahkan ke signer lain lewat GESEKI_CONNECT_API bila perlu.
+const CONNECT_API = (process.env.GESEKI_CONNECT_API || "https://api.eulerstream.com").replace(/\/+$/, "");
+// UA ini yang terbukti diterima /connect (Mac Chrome). Jangan pakai DEFAULT_UA
+// (Safari) di sini: endpointnya memvalidasi bentuk UA.
+const CONNECT_UA =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36";
 
 // Custom user data directory to avoid filling /tmp
 const USER_DATA_DIR = path.join(__dirname, ".chrome-profile");
@@ -113,11 +131,26 @@ const SIGNED_CACHE_MAX_AGE_MS = 60_000;
 const MAX_GENERATIONS_BEFORE_REFRESH =
   Number(process.env.MAX_GENERATIONS_BEFORE_REFRESH) || 500; // Restart browser after this many signatures
 const MAX_SESSION_AGE_MS =
-  Number(process.env.MAX_SESSION_AGE_MS) || 30 * 60 * 1000; // Restart browser after 30 minutes
+  Number(process.env.MAX_SESSION_AGE_MS) || 120 * 60 * 1000; // Restart browser after 2 hours
 
 // Request queue for sequential processing (prevents concurrent access to browser page)
 const requestQueue = [];
 let isProcessingQueue = false;
+
+// Grace shutdown. On a clean OBS exit the bridge asks us to quit after a
+// short delay instead of killing us, so reopening OBS adopts a warm browser
+// session. Every cold start re-warms the SDK against TikTok, and that is
+// traffic from the user's IP — which TikTok rate-limits per address.
+let graceTimer = null;
+const GRACE_MAX_MS = 10 * 60 * 1000;
+
+function cancelGrace() {
+  if (graceTimer) {
+    clearTimeout(graceTimer);
+    graceTimer = null;
+    console.log("[Server] Grace shutdown cancelled by a new request");
+  }
+}
 
 /**
  * Add a signature request to the queue and process sequentially
@@ -963,45 +996,19 @@ function parseResult(url, userAgent = null) {
  * SEMENTARA dan pulih sendiri setelah beberapa menit tanpa permintaan
  * (endpoint lain seperti room/info tetap 200 sepanjang waktu).
  *
- * Karena itu sesi TIDAK dibangun ulang pada penolakan pertama: membangun
- * ulang browser hanya menambah permintaan, memperpanjang blokir, dan tidak
- * memperbaiki apa pun. Rebuild baru dilakukan bila penolakan terjadi
- * berturut-turut dalam jumlah yang menandakan masalah sesi (bukan sekadar
- * jeda sementara), dan dibatasi cooldown panjang.
+ * Sesi TIDAK PERNAH dibangun ulang di sini. Membangun ulang browser berarti
+ * warm-up penuh ke TikTok (navigasi + reload) dari IP yang sedang dibatasi —
+ * persis permintaan tambahan yang memperpanjang blokir. Dulu rebuild dipicu
+ * setelah 5 penolakan; hasilnya jumlah generation turun (browser baru) justru
+ * ketika IP sedang kena batas, jadi lingkaran yang memperburuk keadaan.
+ * Penolakan hanya dihitung dan dicatat; biarkan jeda yang menyembuhkan.
  */
-const BLOCKED_STREAK_BEFORE_REBUILD = 5;
-const BLOCKED_REBUILD_COOLDOWN_MS = 10 * 60_000;
 let blockedStreak = 0;
-let lastBlockedRebuildAt = 0;
-let blockedRebuildInFlight = null;
 
 function noteBlockedResponse(reason) {
   blockedStreak += 1;
-  console.log(
-    `[Server] ${reason} (berturut-turut: ${blockedStreak}/${BLOCKED_STREAK_BEFORE_REBUILD})`,
-  );
-
-  if (blockedStreak < BLOCKED_STREAK_BEFORE_REBUILD) return null;
-  if (blockedRebuildInFlight) return blockedRebuildInFlight;
-
-  const now = Date.now();
-  if (now - lastBlockedRebuildAt < BLOCKED_REBUILD_COOLDOWN_MS) return null;
-
-  lastBlockedRebuildAt = now;
-  blockedStreak = 0;
-  console.log("[Server] Penolakan berulang — membangun ulang sesi signer");
-  blockedRebuildInFlight = (async () => {
-    try {
-      await closeBrowser();
-      await initBrowser();
-      console.log("[Server] Sesi signer dibangun ulang");
-    } catch (e) {
-      console.error("[Server] Rebuild gagal:", e.message);
-    } finally {
-      blockedRebuildInFlight = null;
-    }
-  })();
-  return blockedRebuildInFlight;
+  console.log(`[Server] ${reason} (berturut-turut: ${blockedStreak})`);
+  return null;
 }
 
 // Balasan sehat membuktikan sesi masih diterima: reset hitungan.
@@ -1028,6 +1035,48 @@ function isBlockedWebcastResponse(status, bodyLength) {
 /**
  * HTTP Request Handler
  */
+// TikTok menolak /webcast/im/fetch yang diminta lewat fetch() (undici) dengan
+// 403, padahal URL dan header yang sama diterima (200) bila dikirim lewat
+// https.request() milik Node. Penyebabnya header tambahan yang disuntik undici
+// (accept-language: *, sec-fetch-mode: cors) dan sidik jari TLS-nya, yang tidak
+// dimiliki browser asli. Karena itu permintaan keluar ke TikTok memakai klien
+// core Node, bukan undici.
+function nodeGet(rawUrl, headers) {
+  return new Promise((resolve, reject) => {
+    let u;
+    try {
+      u = new URL(rawUrl);
+    } catch (e) {
+      reject(e);
+      return;
+    }
+    const mod = u.protocol === "http:" ? require("http") : require("https");
+    const req = mod.request(
+      {
+        protocol: u.protocol,
+        hostname: u.hostname,
+        port: u.port || (u.protocol === "http:" ? 80 : 443),
+        path: u.pathname + u.search,
+        method: "GET",
+        headers,
+      },
+      (res) => {
+        const chunks = [];
+        res.on("data", (c) => chunks.push(c));
+        res.on("end", () =>
+          resolve({
+            status: res.statusCode,
+            headers: res.headers,
+            body: Buffer.concat(chunks),
+          }),
+        );
+      },
+    );
+    req.on("error", reject);
+    req.end();
+  });
+}
+
 async function handleRequest(req, res) {
   const url = new URL(req.url, `http://localhost:${PORT}`);
 
@@ -1043,6 +1092,34 @@ async function handleRequest(req, res) {
   }
 
   try {
+    // Grace shutdown: the bridge asks us to exit by ourselves after `ms`
+    // unless another request arrives first. Reopening OBS within that window
+    // reuses this warm session instead of warming a cold one against TikTok.
+    if (url.pathname === "/grace") {
+      const raw = Number(url.searchParams.get("ms"));
+      const ms = Math.min(
+        Math.max(Number.isFinite(raw) && raw > 0 ? raw : 3 * 60 * 1000, 1000),
+        GRACE_MAX_MS,
+      );
+      cancelGrace();
+      graceTimer = setTimeout(async () => {
+        console.log(`[Server] Grace elapsed after ${ms} ms; shutting down`);
+        try {
+          await closeBrowser();
+        } catch (e) {
+          console.error("[Server] closeBrowser during grace failed:", e.message);
+        }
+        process.exit(0);
+      }, ms);
+      console.log(`[Server] Grace shutdown armed for ${ms} ms`);
+      res.writeHead(200);
+      res.end(JSON.stringify({ status: "ok", graceMs: ms }));
+      return;
+    }
+
+    // Any other request means somebody still needs us: keep running.
+    cancelGrace();
+
     // Health check
     if (url.pathname === "/health") {
       const sessionAge = lastInitTime
@@ -1053,6 +1130,7 @@ async function handleRequest(req, res) {
         JSON.stringify({
           status: "ok",
           build: BUILD,
+          ownerPid: OWNER_PID,
           ready: isReady,
           initializing: isInitializing,
           initMethod: initMethod,
@@ -1093,6 +1171,45 @@ async function handleRequest(req, res) {
       // Fix the doubled path from the Go library.
       if (target.includes("/webcast/webcast/fetch/")) {
         target = target.replace("/webcast/webcast/fetch/", "/webcast/im/fetch/");
+      }
+
+      // ── Jalur BARU ────────────────────────────────────────────────
+      // /webcast/im/fetch/ sudah dimatikan TikTok: balasannya 200 dengan
+      // body KOSONG, sehingga PushServer tidak pernah terisi. Endpoint
+      // /webcast/rooms/{id}/connect mengembalikan protobuf yang SAMA dan
+      // tidak butuh tanda tangan. Coba ini dulu; jalur lama di bawah tetap
+      // dipakai sebagai cadangan bila /connect tidak tersedia.
+      let roomId = "";
+      try {
+        roomId = new URL(target).searchParams.get("room_id") || "";
+      } catch (e) {}
+      if (roomId) {
+        const connectUrl =
+          `${CONNECT_API}/webcast/rooms/${encodeURIComponent(roomId)}/connect` +
+          `?client=ttlive-node&cursor=&client_enter=true&platform=web` +
+          `&user_agent=${encodeURIComponent(CONNECT_UA)}`;
+        try {
+          const r = await nodeGet(connectUrl, {
+            Accept: "application/protobuf,application/json",
+            "User-Agent": `tiktok-live-connector/2.5.0 ${process.platform}`,
+          });
+          console.log("[Server] /connect ->", r.status, r.body.length, "bytes");
+          if (r.status === 200 && r.body.length > 0) {
+            noteHealthyResponse();
+            const outHeaders = {
+              "Content-Type": "application/octet-stream",
+              "Access-Control-Allow-Origin": "*",
+            };
+            if (r.headers["x-set-tt-cookie"])
+              outHeaders["X-Set-TT-Cookie"] = r.headers["x-set-tt-cookie"];
+            res.writeHead(200, outHeaders);
+            res.end(r.body);
+            return;
+          }
+          console.log("[Server] /connect tanpa data; coba jalur lama");
+        } catch (e) {
+          console.log("[Server] /connect gagal:", e.message, "- coba jalur lama");
+        }
       }
 
       await initBrowser();
@@ -1150,10 +1267,10 @@ async function handleRequest(req, res) {
       let status = 0;
       let ttCookie = "";
       try {
-        const r = await fetch(signedUrl, { headers: fetchHeaders });
+        const r = await nodeGet(signedUrl, fetchHeaders);
         status = r.status;
-        ttCookie = r.headers.get("x-set-tt-cookie") || "";
-        body = Buffer.from(await r.arrayBuffer());
+        ttCookie = r.headers["x-set-tt-cookie"] || "";
+        body = r.body;
       } catch (e) {
         res.writeHead(502);
         res.end(JSON.stringify({ error: String(e && e.message ? e.message : e) }));
