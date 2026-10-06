@@ -32,32 +32,28 @@ The sidecar connects to a live room through this server, end to end:
 Chat, joins, viewer counts and badges all flow, signed entirely on this
 machine.
 
-## Sign in to TikTok (required)
+## A 403 on /webcast/im/fetch is a rate limit, not a signature fault
 
-TikTok requires a **logged-in session** for the live chat endpoint
-(`/webcast/im/fetch/`). Without one every chat request answers `403` and the
-plugin shows *"TikTok refused the connection"* — even though `room/info` and
-`room/enter` still work, which makes it look like a signature problem when it
-is not.
+The IM transport is rate-limited per address. Measured behaviour:
 
-Sign in once, into the profile the signer uses:
+| Condition | `/webcast/im/fetch` | `room/info` |
+|---|---|---|
+| Fresh session, few requests | **200** + 30–45 KB protobuf | 200 |
+| After dozens of requests in minutes | **403**, or 200 with a 0-byte body | still **200** |
+| After ~3–5 min with no requests | **200** again | 200 |
 
-```bash
-# 1. Close OBS (it owns the signer, and Chrome allows one instance per profile)
-# 2. Run:
-node sign-in.mjs
-# 3. Log in in the window that opens (QR code, phone or email)
-# 4. Close Chrome completely, then start OBS again
-```
+`room/info` answering 200 while `im/fetch` is refused therefore means the
+signature is fine and only the IM transport is limited.
 
-The session is stored in the signer's Chrome profile and reused from then on.
-Chrome's own profile is the only place credentials live; nothing is copied,
-logged or sent anywhere by this project.
+Two mistakes keep the limit alive and are worth avoiding:
 
-Where the profile lives: the plugin passes `SIGNER_PROFILE_DIR` pointing at
-`<plugin_config>\geseki-bridge\signer-profile`, so the login survives plugin
-updates and is shared by every OBS install on the machine. Running
-`node server.mjs` by hand falls back to `./.chrome-profile`.
+- **Probing `im/fetch` repeatedly creates the very 403 you are diagnosing.**
+  Test with ONE request, then wait a few minutes.
+- **Retrying at the ordinary reconnect cap does not let it lapse.** TikTok needs
+  the address quiet for minutes; the sidecar used to retry every 30s forever,
+  which re-armed the limit before it could clear. The sidecar now walks its own
+  ladder for a refusal (2s → 10s → 1m → 5m → 10m) and then stops with a message
+  instead of looping.
 
 ## What made it work
 
@@ -86,7 +82,6 @@ signer has no quota, so a generous ceiling is reported.
 | File | What |
 |---|---|
 | `server.mjs` | HTTP server: `/signature`, `/fetch`, `/webcast/fetch/`, `/webcast/rate_limits`, `/health`, `/restart` |
-| `sign-in.mjs` | Opens Chrome with the signer profile so you can sign in to TikTok |
 | `xgnarly.mjs` | `X-Gnarly` encoding helper |
 | `javascript/` | TikTok's signing SDK, injected into the page locally |
 
@@ -110,7 +105,6 @@ Environment (`.env`):
 | Key | Meaning |
 |---|---|
 | `PORT` | HTTP port, default `8090` |
-| `SIGNER_PROFILE_DIR` | Chrome profile holding the TikTok login (default: `./.chrome-profile`; the plugin sets it to the plugin-config folder) |
 | `PUPPETEER_EXECUTABLE_PATH` | Chrome to drive |
 | `PROXY_ENABLED`, `PROXY_HOST`, `PROXY_USER`, `PROXY_PASS` | optional outbound proxy |
 
@@ -123,8 +117,6 @@ after cloning.
 * **Google Chrome** installed — the signature is computed inside the browser
   by TikTok's own `frontierSign`. Set `PUPPETEER_EXECUTABLE_PATH` if Chrome is
   in a non-standard location.
-* **A TikTok login** in the signer profile — see *Sign in to TikTok* above.
-  This is not optional: without it the chat endpoint answers `403`.
 
 ## Upstream
 

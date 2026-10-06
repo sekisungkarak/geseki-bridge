@@ -510,11 +510,6 @@ std::string QueryParam(const std::string &target, const std::string &key)
 	return std::string();
 }
 
-// obs_module_config_path() returns a path RELATIVE to the plugin directory
-// (e.g. "config\obs-studio\plugin_config\geseki-bridge\config.json"), not an
-// absolute one. Anything that hands the path to another process — the sign
-// server's Chrome profile — must resolve it first, or that process creates a
-// second, empty copy under the plugin folder and the login appears lost.
 std::string ConfigFilePath()
 {
 	char *path = obs_module_config_path("config.json");
@@ -522,17 +517,7 @@ std::string ConfigFilePath()
 		return std::string();
 	std::string p = path;
 	bfree(path);
-
-	const std::wstring w = Utf8ToWide(p);
-	const DWORD need = GetFullPathNameW(w.c_str(), 0, nullptr, nullptr);
-	if (need == 0)
-		return p;
-	std::wstring buf(static_cast<size_t>(need), L'\0');
-	const DWORD got = GetFullPathNameW(w.c_str(), need, &buf[0], nullptr);
-	if (got == 0 || got >= need)
-		return p;
-	buf.resize(got);
-	return WideToUtf8(buf);
+	return p;
 }
 
 // obs_data_get_string can hand back nullptr for an absent key; never let that
@@ -1179,23 +1164,8 @@ bool StartSignServer(int port)
 	// PORT is set inline through cmd.exe: server.mjs reads it from the
 	// environment, and a hand-built environment block is easy to get wrong
 	// (a malformed one fails with error 87 and no explanation).
-	// The TikTok login session lives in this Chrome profile. Keeping it under
-	// the plugin config (rather than inside the plugin folder) means the login
-	// survives plugin updates and is shared by every OBS install on the
-	// machine, instead of needing a fresh sign-in after each update.
-	const std::string config_dir = geseki::bridge::ModuleConfigDir();
-	std::wstring profile_env;
-	if (!config_dir.empty()) {
-		const std::string profile_dir = config_dir + "\\signer-profile";
-		// EnsureParentDir() creates every component but the last, so pass a
-		// trailing separator to create the profile directory itself.
-		EnsureParentDir(profile_dir + "\\");
-		profile_env = L"set \"SIGNER_PROFILE_DIR=" + Utf8ToWide(profile_dir) +
-			       L"\" && ";
-	}
-
 	std::wstring cmd = L"cmd.exe /c \"set PORT=" + std::to_wstring(port) +
-			   L" && " + profile_env + L"node \"server.mjs\"\"";
+			   L" && node \"server.mjs\"\"";
 	std::vector<wchar_t> cmd_buf(cmd.begin(), cmd.end());
 	cmd_buf.push_back(L'\0');
 
@@ -1232,65 +1202,6 @@ void StopSignServer()
 	}
 	g_signer_up.store(false);
 	g_signer_ours.store(false);
-}
-
-// Minimal loopback HTTP GET. Returns the response body, or an empty string on
-// any failure. Only used against the sign server on 127.0.0.1 — no TLS, no
-// redirects, no chunked decoding.
-std::string HttpGetLoopback(int port, const std::string &path)
-{
-	Socket s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-	if (s == kInvalidSocket)
-		return std::string();
-
-	DWORD tv = 4000;
-	setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char *>(&tv), sizeof(tv));
-	setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char *>(&tv), sizeof(tv));
-
-	sockaddr_in addr{};
-	addr.sin_family = AF_INET;
-	addr.sin_port = htons(static_cast<u_short>(port));
-	addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-
-	std::string body;
-	if (connect(s, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) == 0) {
-		const std::string req = "GET " + path +
-					" HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
-		if (send(s, req.c_str(), static_cast<int>(req.size()), 0) > 0) {
-			std::string all;
-			char buf[4096];
-			for (;;) {
-				const int r = recv(s, buf, sizeof(buf), 0);
-				if (r <= 0)
-					break;
-				all.append(buf, static_cast<size_t>(r));
-				if (all.size() > 1u << 20) // 1 MB is plenty for /health
-					break;
-			}
-			const size_t split = all.find("\r\n\r\n");
-			if (split != std::string::npos)
-				body = all.substr(split + 4);
-		}
-	}
-	CloseSocket(s);
-	return body;
-}
-
-// Crude JSON probe: true when `key` is present with the literal `true`.
-// The sign server's /login-status reply is flat, so this needs no parser.
-bool JsonHasTrue(const std::string &json, const std::string &key)
-{
-	const std::string needle = "\"" + key + "\"";
-	size_t p = json.find(needle);
-	if (p == std::string::npos)
-		return false;
-	p = json.find(':', p + needle.size());
-	if (p == std::string::npos)
-		return false;
-	++p;
-	while (p < json.size() && (json[p] == ' ' || json[p] == '	'))
-		++p;
-	return json.compare(p, 4, "true") == 0;
 }
 
 void StartSidecar(const std::string &username, const std::string &apiKey)
@@ -2063,77 +1974,6 @@ void SaveConfig(const Config &cfg)
 	if (cfg.port != old.port)
 		obs_log(LOG_WARNING, "geseki-bridge: port changed to %d; restart OBS to apply",
 			cfg.port);
-}
-
-// True when the signer's profile holds a TikTok session. Returns false when
-// the signer is not running — the caller only uses this to label the dialog,
-// so "unknown" and "not signed in" read the same to the user.
-bool SignerSignedIn(int signPort)
-{
-	if (!SignServerResponding(signPort))
-		return false;
-	const std::string body = HttpGetLoopback(signPort, "/login-status");
-	return JsonHasTrue(body, "signedIn");
-}
-
-// Opens Chrome on the signer profile so the user can sign in, and restarts the
-// signer once a session appears. Runs detached: OBS must stay responsive while
-// the user logs in, which can take minutes.
-bool StartSignInFlow(int signPort)
-{
-	const std::string dir = ModuleDir() + "\\sign-server";
-	const std::string script = dir + "\\sign-in.mjs";
-	if (GetFileAttributesW(Utf8ToWide(script).c_str()) == INVALID_FILE_ATTRIBUTES) {
-		obs_log(LOG_WARNING, "geseki-bridge: sign-in script not found; cannot "
-				     "start the TikTok sign-in flow");
-		return false;
-	}
-	if (!NodeAvailable()) {
-		obs_log(LOG_WARNING, "geseki-bridge: Node.js not found; cannot start "
-				     "the TikTok sign-in flow");
-		return false;
-	}
-
-	// Chrome allows one instance per profile, so the signer's browser has to go
-	// first — otherwise the login window opens against a locked profile.
-	StopSignServer();
-
-	std::wstring cmd = L"cmd.exe /c \"set PORT=" + std::to_wstring(signPort) +
-			   L" && set \"SIGNER_PROFILE_DIR=" +
-			   Utf8ToWide(geseki::bridge::ModuleConfigDir() +
-				      "\\signer-profile") +
-			   L"\" && node \"sign-in.mjs\" --wait\"";
-
-	std::vector<wchar_t> cmd_buf(cmd.begin(), cmd.end());
-	cmd_buf.push_back(L'\0');
-
-	STARTUPINFOW si{};
-	si.cb = sizeof(si);
-	PROCESS_INFORMATION pi{};
-	const BOOL ok = CreateProcessW(nullptr, cmd_buf.data(), nullptr, nullptr, FALSE,
-				       CREATE_NO_WINDOW, nullptr, Utf8ToWide(dir).c_str(),
-				       &si, &pi);
-	if (!ok) {
-		obs_log(LOG_WARNING, "geseki-bridge: could not start the sign-in flow (err %lu)",
-			GetLastError());
-		return false;
-	}
-	CloseHandle(pi.hThread);
-
-	// Wait on a worker: this blocks for as long as the user takes to sign in.
-	std::thread([h = pi.hProcess, signPort] {
-		WaitForSingleObject(h, 15 * 60 * 1000); // hard ceiling
-		DWORD code = 1;
-		GetExitCodeProcess(h, &code);
-		CloseHandle(h);
-		if (code == 0) {
-			obs_log(LOG_INFO, "geseki-bridge: TikTok sign-in finished; restarting the sign server");
-			StartSignServer(signPort);
-		} else {
-			obs_log(LOG_INFO, "geseki-bridge: TikTok sign-in did not complete");
-		}
-	}).detach();
-	return true;
 }
 
 } // namespace geseki::bridge

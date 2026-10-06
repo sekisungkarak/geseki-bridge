@@ -14,10 +14,8 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QFormLayout>
-#include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
-#include <QPushButton>
 #include <QSpinBox>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -80,51 +78,6 @@ void ShowSettingsDialog(void *parent)
 	QObject::connect(alt, &QCheckBox::toggled, signer_port,
 			 [signer_port](bool alt_on) { signer_port->setEnabled(!alt_on); });
 
-	// TikTok refuses the live chat endpoint unless the signer's browser profile
-	// holds a real session, and that failure looks like a signature fault from
-	// the outside. Show the state and offer the fix right here, so nobody has
-	// to find a README and run Node by hand.
-	auto *sign_in_row = new QWidget();
-	auto *sign_in_box = new QHBoxLayout(sign_in_row);
-	sign_in_box->setContentsMargins(0, 0, 0, 0);
-
-	auto *sign_in_state = new QLabel();
-	sign_in_state->setWordWrap(true);
-	sign_in_box->addWidget(sign_in_state, 1);
-
-	auto *sign_in_btn = new QPushButton("Sign in to TikTok");
-	sign_in_btn->setToolTip(
-		"Opens Chrome so you can sign in to TikTok. The local signer needs a "
-		"signed-in session; without one the live chat connection is refused.");
-	sign_in_box->addWidget(sign_in_btn, 0);
-
-	// The signer runs only in local mode, so this is meaningless (and the button
-	// is pointless) while the alternative mode signs remotely.
-	const bool local_mode = !cfg.alt_connection;
-	if (!local_mode) {
-		sign_in_state->setText("Not used in Alternative Connection Mode.");
-		sign_in_btn->setEnabled(false);
-	} else if (geseki::bridge::SignerSignedIn(cfg.sign_server_port)) {
-		sign_in_state->setText("Signed in to TikTok.");
-	} else {
-		sign_in_state->setText(
-			"Not signed in. TikTok refuses the live chat connection until you sign in.");
-	}
-
-	QObject::connect(sign_in_btn, &QPushButton::clicked, &dlg,
-			 [signer_port, sign_in_state, sign_in_btn] {
-				 if (geseki::bridge::StartSignInFlow(signer_port->value())) {
-					 sign_in_state->setText(
-						 "Chrome opened. Sign in there; the sign server "
-						 "restarts automatically once you are done.");
-					 sign_in_btn->setEnabled(false);
-				 } else {
-					 sign_in_state->setText(
-						 "Could not open Chrome. Check that Node.js and "
-						 "Google Chrome are installed.");
-				 }
-			 });
-
 	auto *port = new QSpinBox();
 	port->setRange(1, 65535);
 	port->setValue(cfg.port);
@@ -135,17 +88,7 @@ void ShowSettingsDialog(void *parent)
 	form->addRow(auto_conn);
 	form->addRow("Bridge port", port);
 	form->addRow("Sign server port", signer_port);
-	form->addRow("TikTok sign-in", sign_in_row);
 	outer->addLayout(form);
-
-	// Toggling the mode must also flip the sign-in row, not just the port field.
-	QObject::connect(alt, &QCheckBox::toggled, &dlg,
-			 [sign_in_btn, sign_in_state](bool alt_on) {
-				 sign_in_btn->setEnabled(!alt_on);
-				 if (alt_on)
-					 sign_in_state->setText(
-						 "Not used in Alternative Connection Mode.");
-			 });
 
 	auto *hint = new QLabel(
 		QString("Widgets connect to ws://127.0.0.1:%1/ws. "
