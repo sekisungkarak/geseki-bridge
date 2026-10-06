@@ -285,7 +285,17 @@ func runSession(ctx context.Context, cancel context.CancelFunc, tt *gotiktoklive
 		}
 		// The room owner carries the streamer's real avatar. The plugin shows
 		// it in the dashboard status pill, so report it once per session.
-		if url := ownerAvatarURL(l); url != "" {
+		url := ownerAvatarURL(l)
+		if url == "" {
+			// room/info sometimes answers without an owner at all — TikTok
+			// returns status_code 4003110 with an empty payload for some
+			// rooms — and the pill would then sit on its placeholder for the
+			// whole session. The room-user page already fetched to resolve
+			// the room id carries the same picture, so fall back to it. Only
+			// paid when the primary source came back empty.
+			url = fallbackAvatarURL(tt, username)
+		}
+		if url != "" {
 			emit(outMsg{Ev: "tiktok", Event: "roomOwner", Data: map[string]interface{}{
 				"avatar": url,
 			}})
@@ -328,6 +338,36 @@ func ownerAvatarURL(l *gotiktoklive.Live) string {
 			if u != "" {
 				return u
 			}
+		}
+	}
+	return ""
+}
+
+// fallbackAvatarURL reads the streamer's picture from the room-user page.
+//
+// The room id was resolved from that same page a moment earlier, so this is
+// the data the primary source should have carried; TikTok just omits it from
+// room/info for some rooms (status_code 4003110, empty payload). It is only
+// called when ownerAvatarURL came back empty, so the extra request is paid
+// only on the sessions that would otherwise show no picture at all.
+//
+// The URL is returned as-is: it is signed and short-lived, and the dashboard
+// already falls back to its placeholder if the image fails to load.
+func fallbackAvatarURL(tt *gotiktoklive.TikTok, username string) string {
+	if tt == nil || username == "" {
+		return ""
+	}
+	ui, err := tt.GetLiveRoomUserInfo(username)
+	if err != nil || ui.LiveRoomUser == nil {
+		if err != nil {
+			logf("avatar fallback failed: %v", err)
+		}
+		return ""
+	}
+	u := ui.LiveRoomUser
+	for _, s := range []string{u.AvatarMedium, u.AvatarLarger, u.AvatarThumb} {
+		if s != "" {
+			return s
 		}
 	}
 	return ""
