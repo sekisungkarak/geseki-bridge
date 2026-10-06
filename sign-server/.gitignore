@@ -3,3 +3,4 @@ node_modules/
 .chrome-profile/
 .env
 *.log
+login-status.json

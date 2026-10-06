@@ -13,6 +13,7 @@
  *
  * Environment Variables:
  * - PORT          - Server port (default: 8090)
+ * - SIGNER_PROFILE_DIR - Chrome profile dir (default: ./.chrome-profile)
  * - PROXY_ENABLED - Enable proxy (default: false)
  * - PROXY_HOST    - Proxy host:port (e.g., "proxy.example.com:8080")
  * - PROXY_USER    - Proxy username
@@ -33,8 +34,13 @@ puppeteer.use(StealthPlugin());
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 8090;
 
-// Custom user data directory to avoid filling /tmp
-const USER_DATA_DIR = path.join(__dirname, ".chrome-profile");
+// Browser profile directory. The plugin passes SIGNER_PROFILE_DIR so the
+// profile (which holds the logged-in TikTok session) lives under the OBS
+// plugin config and survives plugin updates. Falling back to a folder
+// beside the script keeps a manual `node server.mjs` run working.
+const USER_DATA_DIR = process.env.SIGNER_PROFILE_DIR
+  ? path.resolve(process.env.SIGNER_PROFILE_DIR)
+  : path.join(__dirname, ".chrome-profile");
 
 // User agent - Safari on macOS
 const DEFAULT_UA =

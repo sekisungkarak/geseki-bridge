@@ -1164,8 +1164,23 @@ bool StartSignServer(int port)
 	// PORT is set inline through cmd.exe: server.mjs reads it from the
 	// environment, and a hand-built environment block is easy to get wrong
 	// (a malformed one fails with error 87 and no explanation).
+	// The TikTok login session lives in this Chrome profile. Keeping it under
+	// the plugin config (rather than inside the plugin folder) means the login
+	// survives plugin updates and is shared by every OBS install on the
+	// machine, instead of needing a fresh sign-in after each update.
+	const std::string config_dir = geseki::bridge::ModuleConfigDir();
+	std::wstring profile_env;
+	if (!config_dir.empty()) {
+		const std::string profile_dir = config_dir + "\\signer-profile";
+		// EnsureParentDir() creates every component but the last, so pass a
+		// trailing separator to create the profile directory itself.
+		EnsureParentDir(profile_dir + "\\");
+		profile_env = L"set \"SIGNER_PROFILE_DIR=" + Utf8ToWide(profile_dir) +
+			       L"\" && ";
+	}
+
 	std::wstring cmd = L"cmd.exe /c \"set PORT=" + std::to_wstring(port) +
-			   L" && node \"server.mjs\"\"";
+			   L" && " + profile_env + L"node \"server.mjs\"\"";
 	std::vector<wchar_t> cmd_buf(cmd.begin(), cmd.end());
 	cmd_buf.push_back(L'\0');
 
