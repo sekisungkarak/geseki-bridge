@@ -70,7 +70,13 @@ void ShowSettingsDialog(void *parent)
 	key->setEnabled(cfg.alt_connection);
 	signer_port->setEnabled(!cfg.alt_connection);
 	QObject::connect(alt, &QCheckBox::toggled, key, &QWidget::setEnabled);
-	QObject::connect(alt, &QCheckBox::toggled, signer_port, &QWidget::setEnabled);
+	// signer_port is the opposite of the API key: it belongs to the local
+	// mode, so it must be enabled when Alternative Connection Mode is OFF.
+	// Connecting toggled() straight to setEnabled() would invert that (the
+	// signal carries the new checked state), leaving the port locked exactly
+	// when the local signer needs it.
+	QObject::connect(alt, &QCheckBox::toggled, signer_port,
+			 [signer_port](bool alt_on) { signer_port->setEnabled(!alt_on); });
 
 	auto *port = new QSpinBox();
 	port->setRange(1, 65535);
