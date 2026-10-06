@@ -46,9 +46,8 @@ void ShowSettingsDialog(void *parent)
 	auto *alt = new QCheckBox("Alternative Connection Mode");
 	alt->setChecked(cfg.alt_connection);
 	alt->setToolTip(
-		"Sign TikTok requests through a remote service instead of the local "
-		"sign server. Use it when Node.js or Google Chrome is unavailable. "
-		"The service applies a shared rate limit, which an API key raises.");
+		"Sign through a remote service instead of the local sign server. "
+		"Needs no Node.js or Chrome; shares a rate limit, which an API key raises.");
 
 	auto *key = new QLineEdit(QString::fromStdString(cfg.tiktok_api_key));
 	key->setEchoMode(QLineEdit::Password);

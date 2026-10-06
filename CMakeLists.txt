@@ -54,7 +54,7 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE "${CMAKE_CURRENT_SOURCE
 # standard set by cmake/common/compiler_common.cmake is sufficient — no
 # coroutines and no C++20 requirement.
 if(OS_WINDOWS)
-  target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE ws2_32 shell32 windowsapp runtimeobject)
+  target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE ws2_32 shell32 windowsapp runtimeobject iphlpapi)
   target_compile_definitions(
     ${CMAKE_PROJECT_NAME} PRIVATE _WIN32_WINNT=0x0A00 NOMINMAX WIN32_LEAN_AND_MEAN
   )

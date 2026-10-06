@@ -32,6 +32,11 @@ puppeteer.use(StealthPlugin());
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 8090;
+// Which plugin build launched this server. /health reports it so the plugin
+// can tell a current server from an orphan left by an older one: an adopted
+// orphan is never replaced, so a stale one would be reused indefinitely.
+// Empty means "started by hand or by a build that predates this field".
+const BUILD = (process.env.GESEKI_BUILD || "").trim();
 
 // Custom user data directory to avoid filling /tmp
 const USER_DATA_DIR = path.join(__dirname, ".chrome-profile");
@@ -1047,6 +1052,7 @@ async function handleRequest(req, res) {
       res.end(
         JSON.stringify({
           status: "ok",
+          build: BUILD,
           ready: isReady,
           initializing: isInitializing,
           initMethod: initMethod,

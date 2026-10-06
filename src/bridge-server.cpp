@@ -35,6 +35,8 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <shlobj.h>
+#include <iphlpapi.h>
+#include <tlhelp32.h>
 
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "shell32.lib")
@@ -1014,6 +1016,11 @@ std::atomic<bool> g_signer_up{false};
 // previous OBS that was killed). We must never kill a process we did not
 // start, so StopSignServer only terminates our own child.
 std::atomic<bool> g_signer_ours{false};
+// Owns the sign server process tree (cmd.exe -> node.exe -> Chrome).
+// KILL_ON_JOB_CLOSE tears the whole tree down when this process exits, even on
+// a crash. TerminateProcess on the cmd.exe handle alone left node.exe and its
+// Chrome children behind, and the next OBS session adopted those orphans.
+HANDLE g_signer_job = nullptr;
 
 // Directory holding the plugin DLL — sign-server/ sits beside it.
 std::string ModuleDir()
@@ -1110,6 +1117,230 @@ bool SignServerResponding(int port)
 	return up;
 }
 
+// Job that owns the sign server tree. KILL_ON_JOB_CLOSE means the tree dies
+// when this process exits, including on a crash where no cleanup code runs.
+HANDLE EnsureSignerJob()
+{
+	if (g_signer_job)
+		return g_signer_job;
+
+	HANDLE job = CreateJobObjectW(nullptr, nullptr);
+	if (!job)
+		return nullptr;
+
+	JOBOBJECT_EXTENDED_LIMIT_INFORMATION info{};
+	info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+	if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, &info,
+				     sizeof(info))) {
+		CloseHandle(job);
+		return nullptr;
+	}
+	g_signer_job = job;
+	return job;
+}
+
+// PID of the process listening on `port`, or 0. Used only to replace a sign
+// server built for a different version, so it is always ours.
+DWORD PidListeningOn(int port)
+{
+	DWORD size = 0;
+	GetExtendedTcpTable(nullptr, &size, FALSE, AF_INET, TCP_TABLE_OWNER_PID_LISTENER, 0);
+	if (size == 0)
+		return 0;
+
+	std::vector<uint8_t> buf(size);
+	auto *tbl = reinterpret_cast<MIB_TCPTABLE_OWNER_PID *>(buf.data());
+	if (GetExtendedTcpTable(tbl, &size, FALSE, AF_INET, TCP_TABLE_OWNER_PID_LISTENER, 0) !=
+	    NO_ERROR)
+		return 0;
+
+	for (DWORD i = 0; i < tbl->dwNumEntries; ++i) {
+		const auto &row = tbl->table[i];
+		if (ntohs(static_cast<u_short>(row.dwLocalPort)) == port)
+			return row.dwOwningPid;
+	}
+	return 0;
+}
+
+// Kills `pid` and all of its descendants. Terminating the parent alone leaves
+// the children (node.exe's Chrome) running, which is exactly how the orphan
+// sign server was created.
+void KillProcessTree(DWORD pid)
+{
+	if (pid == 0)
+		return;
+
+	std::map<DWORD, std::vector<DWORD>> kids;
+	HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+	if (snap != INVALID_HANDLE_VALUE) {
+		PROCESSENTRY32W pe{};
+		pe.dwSize = sizeof(pe);
+		if (Process32FirstW(snap, &pe)) {
+			do {
+				kids[pe.th32ParentProcessID].push_back(pe.th32ProcessID);
+			} while (Process32NextW(snap, &pe));
+		}
+		CloseHandle(snap);
+	}
+
+	// Depth-first order, then kill in reverse so children go before parents.
+	std::vector<DWORD> order;
+	std::vector<DWORD> stack{pid};
+	while (!stack.empty()) {
+		const DWORD cur = stack.back();
+		stack.pop_back();
+		order.push_back(cur);
+		const auto it = kids.find(cur);
+		if (it != kids.end())
+			for (const DWORD k : it->second)
+				stack.push_back(k);
+	}
+	for (auto it = order.rbegin(); it != order.rend(); ++it) {
+		HANDLE h = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, *it);
+		if (!h)
+			continue;
+		TerminateProcess(h, 0);
+		CloseHandle(h);
+	}
+}
+
+// Decodes an HTTP/1.1 chunked body: "<hex size>\r\n<data>\r\n" runs, ended
+// by a zero-size chunk. A body that is not chunked (no CRLF before the first
+// brace) is returned unchanged, so this is safe to call unconditionally.
+std::string DecodeChunked(const std::string &in)
+{
+	// Not chunked when the payload starts immediately with JSON.
+	if (in.empty() || in[0] == '{' || in[0] == '[')
+		return in;
+
+	std::string out;
+	size_t i = 0;
+	while (i < in.size()) {
+		const size_t eol = in.find("\r\n", i);
+		if (eol == std::string::npos)
+			break;
+		std::string hex = in.substr(i, eol - i);
+		if (const size_t semi = hex.find(';'); semi != std::string::npos)
+			hex.resize(semi); // chunk extensions are not part of the size
+		unsigned long n = 0;
+		try {
+			n = std::stoul(hex, nullptr, 16);
+		} catch (...) {
+			break;
+		}
+		i = eol + 2;
+		if (n == 0)
+			break;
+		if (i + n > in.size()) {
+			out.append(in, i, in.size() - i);
+			break;
+		}
+		out.append(in, i, n);
+		i += n;
+		if (i + 1 < in.size() && in[i] == '\r' && in[i + 1] == '\n')
+			i += 2;
+	}
+	return out;
+}
+
+// Asks the sign server on `port` for /health. True when a sign server answers
+// with status "ok". `build` receives the version it was launched for; empty
+// means a server from before version tagging, i.e. certainly stale.
+bool ProbeSignServerHealth(int port, std::string *build)
+{
+	Socket s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+	if (s == kInvalidSocket)
+		return false;
+
+	DWORD tv = 600;
+	setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char *>(&tv), sizeof(tv));
+	setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char *>(&tv), sizeof(tv));
+
+	sockaddr_in addr{};
+	addr.sin_family = AF_INET;
+	addr.sin_port = htons(static_cast<u_short>(port));
+	addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	if (connect(s, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) != 0) {
+		CloseSocket(s);
+		return false;
+	}
+
+	const std::string req =
+		"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
+	if (!SendAll(s, req.data(), req.size())) {
+		CloseSocket(s);
+		return false;
+	}
+
+	std::string resp;
+	char buf[4096];
+	for (;;) {
+		const int r = recv(s, buf, static_cast<int>(sizeof(buf)), 0);
+		if (r <= 0)
+			break;
+		resp.append(buf, static_cast<size_t>(r));
+		if (resp.size() > 128 * 1024)
+			break;
+	}
+	CloseSocket(s);
+
+		const size_t split = resp.find("\r\n\r\n");
+	if (split == std::string::npos)
+		return false;
+
+	// Node answers /health with Transfer-Encoding: chunked (no Content-Length),
+	// so the body is "<hex size>\r\n<data>\r\n" runs ending in "0\r\n\r\n".
+	// Decode it before parsing, or every probe fails and every server looks
+	// foreign.
+	std::string head = resp.substr(0, split);
+	std::transform(head.begin(), head.end(), head.begin(),
+		       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+	std::string body = resp.substr(split + 4);
+	if (head.find("transfer-encoding: chunked") != std::string::npos)
+		body = DecodeChunked(body);
+
+	geseki::json::Value v;
+	if (!geseki::json::Value::Parse(body, v))
+		return false;
+	const auto *st = v.find("status");
+	if (!st || st->as_string() != "ok")
+		return false;
+	if (build) {
+		const auto *b = v.find("build");
+		*build = b ? b->as_string() : std::string();
+	}
+	return true;
+}
+
+// Fire-and-forget: asks the sign server to rebuild its browser session. An
+// adopted server may have run for hours with a stale or rate-limited Chrome;
+// this gives the user what a restart would, without losing the process.
+void RequestSignServerRestart(int port)
+{
+	std::thread([port] {
+		Socket s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+		if (s == kInvalidSocket)
+			return;
+		DWORD tv = 15000;
+		setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char *>(&tv), sizeof(tv));
+		setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char *>(&tv), sizeof(tv));
+		sockaddr_in addr{};
+		addr.sin_family = AF_INET;
+		addr.sin_port = htons(static_cast<u_short>(port));
+		addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+		if (connect(s, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) == 0) {
+			const std::string req =
+				"GET /restart HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
+			SendAll(s, req.data(), req.size());
+			char buf[1024];
+			// Drain so the server finishes its work before we drop the socket.
+			while (recv(s, buf, static_cast<int>(sizeof(buf)), 0) > 0) {
+			}
+		}
+		CloseSocket(s);
+	}).detach();
+}
+
 // Launches `node server.mjs` from sign-server/. Returns false (and logs) when
 // Node is missing or the script is not there.
 bool StartSignServer(int port)
@@ -1117,14 +1348,41 @@ bool StartSignServer(int port)
 	if (g_signer_up.load())
 		return true;
 
-	// An orphan from a previous session (OBS killed rather than closed) is
-	// still holding the port: adopt it instead of starting a second server
-	// that cannot bind. It is not our child, so Stop() leaves it alone.
+	// Something already holds the port. Adopt it ONLY when it is this build:
+	// an orphan from an older plugin behaves differently, and once adopted it is
+	// never replaced (Stop() leaves a process it did not start alone), so the
+	// stale server would be reused for the rest of the machine's uptime.
 	if (SignServerResponding(port)) {
-		g_signer_up.store(true);
-		g_signer_ours.store(false);
-		obs_log(LOG_INFO, "geseki-bridge: reusing the sign server already on port %d", port);
-		return true;
+		std::string build;
+		if (!ProbeSignServerHealth(port, &build)) {
+			// Busy, but not answering /health as a sign server: a foreign app,
+			// or a server still coming up. Adopt it rather than risk killing
+			// something that is not ours.
+			g_signer_up.store(true);
+			g_signer_ours.store(false);
+			obs_log(LOG_WARNING,
+				"geseki-bridge: port %d is busy but does not answer /health; reusing it as-is",
+				port);
+			return true;
+		}
+		if (build == GESEKI_BRIDGE_VERSION) {
+			g_signer_up.store(true);
+			g_signer_ours.store(false);
+			obs_log(LOG_INFO,
+				"geseki-bridge: reusing the sign server already on port %d (build %s)",
+				port, build.c_str());
+			// An adopted session may have run for hours (its Chrome can be
+			// stale or rate-limited). Rebuild the browser so the user gets
+			// what a restart would give them.
+			RequestSignServerRestart(port);
+			return true;
+		}
+		obs_log(LOG_WARNING,
+			"geseki-bridge: replacing a sign server on port %d built for '%s' (this plugin is %s)",
+			port, build.empty() ? "unknown" : build.c_str(), GESEKI_BRIDGE_VERSION);
+		KillProcessTree(PidListeningOn(port));
+		for (int i = 0; i < 30 && PidListeningOn(port) != 0; ++i)
+			Sleep(100);
 	}
 
 	if (!NodeAvailable()) {
@@ -1161,10 +1419,11 @@ bool StartSignServer(int port)
 	}
 
 	// Run it hidden: the sign server is a background helper, not a window.
-	// PORT is set inline through cmd.exe: server.mjs reads it from the
+	// PORT and GESEKI_BUILD go in through cmd.exe: server.mjs reads them from the
 	// environment, and a hand-built environment block is easy to get wrong
 	// (a malformed one fails with error 87 and no explanation).
 	std::wstring cmd = L"cmd.exe /c \"set PORT=" + std::to_wstring(port) +
+			   L" && set GESEKI_BUILD=" + Utf8ToWide(GESEKI_BRIDGE_VERSION) +
 			   L" && node \"server.mjs\"\"";
 	std::vector<wchar_t> cmd_buf(cmd.begin(), cmd.end());
 	cmd_buf.push_back(L'\0');
@@ -1172,13 +1431,31 @@ bool StartSignServer(int port)
 	STARTUPINFOW si{};
 	si.cb = sizeof(si);
 	PROCESS_INFORMATION pi{};
+	// CREATE_SUSPENDED so cmd.exe is inside the job before it can spawn
+	// node.exe: a job kills the tree it holds, but a child spawned a moment
+	// before the assignment would escape it.
+	const DWORD flags = CREATE_NO_WINDOW | CREATE_SUSPENDED;
 	const BOOL ok = CreateProcessW(nullptr, cmd_buf.data(), nullptr, nullptr, FALSE,
-				       CREATE_NO_WINDOW, nullptr, Utf8ToWide(dir).c_str(), &si, &pi);
+				       flags, nullptr, Utf8ToWide(dir).c_str(), &si, &pi);
 	if (!ok) {
 		obs_log(LOG_WARNING, "geseki-bridge: could not start the sign server (err %lu)",
 			GetLastError());
 		return false;
 	}
+	// Put the whole tree (cmd.exe -> node.exe -> Chrome) in a job that dies with
+	// this process. Terminating the cmd.exe handle alone left node.exe and its
+	// Chrome children running, and the next OBS session adopted those orphans,
+	// so the sign server never went away.
+	if (HANDLE job = EnsureSignerJob()) {
+		if (!AssignProcessToJobObject(job, pi.hProcess))
+			obs_log(LOG_WARNING,
+				"geseki-bridge: sign server not placed in a job (err %lu); it may outlive OBS",
+				GetLastError());
+	} else {
+		obs_log(LOG_WARNING, "geseki-bridge: could not create the sign server job (err %lu)",
+			GetLastError());
+	}
+	ResumeThread(pi.hThread);
 	CloseHandle(pi.hThread);
 	{
 		std::lock_guard<std::mutex> lk(g_signer_mu);
@@ -1195,7 +1472,19 @@ void StopSignServer()
 	std::lock_guard<std::mutex> lk(g_signer_mu);
 	// Never kill an adopted server: it belongs to another session (or to a
 	// manual run) and killing it would break whoever is using it.
-	if (g_signer_proc && g_signer_ours.load()) {
+		if (g_signer_proc && g_signer_ours.load()) {
+		// Closing the job kills the WHOLE tree — cmd.exe, node.exe and every
+		// Chrome child. TerminateProcess on the cmd.exe handle alone left the
+		// rest running, which is how the orphan sign server was born.
+		const DWORD pid = GetProcessId(g_signer_proc);
+		if (g_signer_job) {
+			CloseHandle(g_signer_job);
+			g_signer_job = nullptr;
+		}
+		// Kill the tree explicitly as well. Closing the job already does it,
+		// but AssignProcessToJobObject fails when OBS itself runs inside a
+		// job, and then the children would survive the cmd.exe termination.
+		KillProcessTree(pid);
 		TerminateProcess(g_signer_proc, 0);
 		CloseHandle(g_signer_proc);
 		g_signer_proc = nullptr;
