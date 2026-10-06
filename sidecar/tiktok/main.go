@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand"
 	"os"
 	"strconv"
 	"strings"
@@ -180,12 +181,34 @@ const (
 	waitForLiveDelay = 30 * time.Second
 )
 
+// blockedBackoffSteps is the wait ladder for a REFUSED connection (TikTok
+// answers 403 on the IM transport). It differs from an ordinary drop on
+// purpose: most refusals are a blip — a dropped socket, one unlucky request —
+// and recover within seconds, so the first steps stay SHORT. If they keep
+// coming, TikTok is rate-limiting the address and only clears after a few
+// QUIET minutes, which the ordinary 30s cap never allowed, so the ladder then
+// escalates into minutes. Escalating only on repetition keeps a blip fast
+// without letting a real limit persist. It is a var, not a const, because Go
+// constants cannot hold a slice.
+var blockedBackoffSteps = []time.Duration{
+	2 * time.Second,  // blip: same speed as a normal reconnect
+	10 * time.Second, // still refusing: ease off
+	1 * time.Minute,  // looks like a real limit: needs quiet
+	5 * time.Minute,
+	10 * time.Minute,
+}
+
+// blockedGiveUpAfter is the number of attempts before giving up entirely.
+var blockedGiveUpAfter = len(blockedBackoffSteps)
+
 // runSession tracks the room and reconnects when the socket drops. It returns
 // when the context is cancelled (a new connect, a disconnect, or quit) or when
 // the stream has genuinely ended.
 func runSession(ctx context.Context, cancel context.CancelFunc, tt *gotiktoklive.TikTok, username string) {
 	delay := reconnectBaseDelay
 	first := true
+	// Refusals get their own ladder: see blockedBackoffSteps.
+	blockedCount := 0
 
 	for {
 		if first {
@@ -214,20 +237,30 @@ func runSession(ctx context.Context, cancel context.CancelFunc, tt *gotiktoklive
 				continue
 			}
 			if blockedError(err) {
-				// Blokir tidak akan hilang dengan menunggu: beri tahu sekali,
-				// lalu tetap mencoba dengan jeda panjang supaya koneksi pulih
-				// sendiri bila TikTok melonggarkan.
-				logf("blocked by TikTok: %v", err)
-				// The two real causes, in the order users hit them: the signer has
-				// no logged-in TikTok session (TikTok requires one for the chat
-				// endpoint), or its signing SDK has fallen behind. Say both —
-				// "needs updating" alone sends people after the wrong fix.
-				emitState("error", "TikTok refused the connection — sign in to TikTok in the signer's browser profile (see sign-server/README.md), or update the local signer")
-				if !sleepBackoff(ctx, &delay) {
+				blockedCount++
+				logf("blocked by TikTok (attempt %d/%d): %v", blockedCount, blockedGiveUpAfter, err)
+
+				// Give up once the ladder is exhausted: a loop that cannot
+				// succeed only hides the problem and re-arms the limit.
+				if blockedCount > blockedGiveUpAfter {
+					logf("blocked %d times in a row; giving up until the user reconnects", blockedCount-1)
+					emitState("error", "TikTok rate limit. Reconnect in a few minutes.")
+					return
+				}
+
+				// Short first steps so a blip recovers fast; minutes only once
+				// the refusal proves to be a real limit. A little jitter, as
+				// TikFinity does, keeps retries from landing on a fixed beat.
+				wait := jittered(blockedBackoffSteps[blockedCount-1])
+				emitState("error", "Refused by TikTok. Retrying in "+shortDuration(wait)+".")
+
+				if !sleepFor(ctx, wait) {
 					return
 				}
 				continue
 			}
+
+			// Anything else that is not "not live" is an ordinary drop.
 			logf("track failed: %v (retry in %s)", err, delay)
 			if !sleepBackoff(ctx, &delay) {
 				return
@@ -238,6 +271,9 @@ func runSession(ctx context.Context, cancel context.CancelFunc, tt *gotiktoklive
 
 		setSession(l, cancel)
 		emitState("connected", "")
+		// A successful connection proves the limit lapsed: start the refusal
+		// ladder over so a later block is treated as fresh.
+		blockedCount = 0
 
 		// RoomInfo carries the starting viewer count; ViewersEvent only fires
 		// when the number changes, so a widget opened mid-stream would
@@ -335,6 +371,43 @@ func nextBackoff(cur time.Duration) time.Duration {
 		next = reconnectMaxDelay
 	}
 	return next
+}
+
+// sleepFor waits for exactly `d`. Unlike sleepBackoff it does not advance a
+// counter: the refusal ladder is driven by the caller, which also needs to stop
+// after a fixed number of attempts. Returns false when the context ended.
+func sleepFor(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
+}
+
+// shortDuration renders a wait as "5s" / "2m" for the status line. Duration's
+// own String() gives "2m0s", which reads badly in a one-line status pill.
+func shortDuration(d time.Duration) string {
+	if d < time.Minute {
+		return strconv.Itoa(int(d.Round(time.Second)/time.Second)) + "s"
+	}
+	return strconv.Itoa(int(d.Round(time.Minute)/time.Minute)) + "m"
+}
+
+// jittered spreads a wait across [d/2, d]. TikFinity adds jitter to its
+// reconnect delay for the same reason: without it every retry lands on an
+// exact beat, and a limit enforced on a sliding window can be hit again by a
+// request that arrives precisely when the window resets. Half the wait is kept
+// fixed so a short step stays short (jitter must not stretch a 2s blip retry
+// into something the user notices).
+func jittered(d time.Duration) time.Duration {
+	if d <= 0 {
+		return d
+	}
+	half := d / 2
+	return half + time.Duration(rand.Int63n(int64(half)+1))
 }
 
 // terminalTrackError reports whether a TrackUser failure means "stop for good":

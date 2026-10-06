@@ -58,6 +58,108 @@ func TestSleepBackoffAbortsOnCancel(t *testing.T) {
 	}
 }
 
+// TestJitteredStaysInBounds: jitter must not turn a 2s blip retry into
+// something the user notices, and must not exceed the step it decorates.
+func TestJitteredStaysInBounds(t *testing.T) {
+	for _, step := range []time.Duration{2 * time.Second, 10 * time.Second, time.Minute} {
+		seen := map[time.Duration]bool{}
+		for i := 0; i < 200; i++ {
+			got := jittered(step)
+			if got < step/2 || got > step {
+				t.Fatalf("jittered(%s) = %s, want within [%s, %s]", step, got, step/2, step)
+			}
+			seen[got] = true
+		}
+		if len(seen) < 2 {
+			t.Errorf("jittered(%s) produced %d distinct values; want variation", step, len(seen))
+		}
+	}
+}
+
+// TestJitteredZero: a zero/negative delay must pass through untouched, not panic.
+func TestJitteredZero(t *testing.T) {
+	if got := jittered(0); got != 0 {
+		t.Errorf("jittered(0) = %s, want 0", got)
+	}
+}
+
+// TestShortDuration: the status line must read "5s"/"2m", not Go's "2m0s".
+func TestShortDuration(t *testing.T) {
+	cases := []struct {
+		in   time.Duration
+		want string
+	}{
+		{5 * time.Second, "5s"},
+		{30 * time.Second, "30s"},
+		{time.Minute, "1m"},
+		{2 * time.Minute, "2m"},
+		{10 * time.Minute, "10m"},
+	}
+	for _, c := range cases {
+		if got := shortDuration(c.in); got != c.want {
+			t.Errorf("shortDuration(%s) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestBlockedBackoffLadder: the refusal ladder must start SHORT (a blip should
+// recover in seconds, not make the user wait a minute) and only then escalate
+// past the ordinary reconnect cap, because a real rate limit needs minutes of
+// quiet. Both halves matter: too eager and a real limit never clears; too slow
+// at the start and a blip costs the user a long wait.
+func TestBlockedBackoffLadder(t *testing.T) {
+	steps := blockedBackoffSteps
+	if len(steps) == 0 {
+		t.Fatal("blockedBackoffSteps is empty")
+	}
+	if steps[0] > 10*time.Second {
+		t.Errorf("first refusal waits %s; a blip must recover fast", steps[0])
+	}
+	if steps[0] > reconnectBaseDelay*2 {
+		t.Errorf("first refusal waits %s, longer than a normal reconnect", steps[0])
+	}
+	// Strictly increasing, and the last step must outlast the reconnect cap.
+	for i := 1; i < len(steps); i++ {
+		if steps[i] <= steps[i-1] {
+			t.Errorf("step %d (%s) does not exceed step %d (%s)",
+				i, steps[i], i-1, steps[i-1])
+		}
+	}
+	if last := steps[len(steps)-1]; last <= reconnectMaxDelay {
+		t.Errorf("final step %s does not exceed the reconnect cap %s",
+			last, reconnectMaxDelay)
+	}
+	if blockedGiveUpAfter != len(steps) {
+		t.Errorf("blockedGiveUpAfter = %d, want len(steps) = %d",
+			blockedGiveUpAfter, len(steps))
+	}
+}
+
+// TestSleepForAbortsOnCancel: quitting OBS (or reconnecting by hand) during a
+// refusal wait must end it immediately, not sleep for minutes.
+func TestSleepForAbortsOnCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	start := time.Now()
+	if sleepFor(ctx, 5*time.Minute) {
+		t.Fatal("sleepFor returned true on a cancelled context")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("sleepFor waited %s after cancel; want an immediate return", elapsed)
+	}
+}
+
+// TestSleepForWaitsWhenNotCancelled: the guard above must not be a no-op.
+func TestSleepForWaitsWhenNotCancelled(t *testing.T) {
+	start := time.Now()
+	if !sleepFor(context.Background(), 20*time.Millisecond) {
+		t.Fatal("sleepFor returned false on a live context")
+	}
+	if elapsed := time.Since(start); elapsed < 15*time.Millisecond {
+		t.Fatalf("sleepFor returned after %s; want it to wait", elapsed)
+	}
+}
+
 // TestTerminalTrackError: only an unresolvable handle stops the session for
 // good. A stream that is not live (yet) or just ended must keep the sidecar
 // polling, or opening OBS before going live would require an OBS restart.
