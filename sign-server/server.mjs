@@ -242,10 +242,11 @@ async function initBrowser() {
       "--disable-blink-features=AutomationControlled",
       "--disable-gpu",
       "--window-size=1920,1080",
-      // Chrome otherwise fills the profile with background downloads
-      // (component_crx_cache, optimization-guide models, the on-device TTS
-      // engine) — over 100 MB the signer never uses. Turning them off keeps
-      // the login profile small and the signer light.
+      // Chrome downloads background components into the profile (optimization-
+      // guide models, the on-device TTS engine, a CRX cache) that the signer
+      // never uses. These flags stop the biggest one and most background
+      // traffic; they do NOT stop every component, so the profile still
+      // settles around ~130 MB rather than ~60 MB. Caches, so it stabilises.
       "--disable-component-update",
       "--disable-background-networking",
       "--disable-default-apps",
