@@ -32,19 +32,17 @@ in *Settings*; **local signing is the default**.
 
 | Mode | How | Needs |
 | --- | --- | --- |
-| **Local sign server** (default) | The plugin runs `sign-server/` (Node + headless browser) and signs on this machine | **Node.js** and **Google Chrome** |
+| **Local sign server** (default) | The plugin runs `sign-server/` on this machine | **Node.js** |
 | **Alternative Connection Mode** | Signs through a remote signing service instead; an optional API key raises its rate limit | nothing |
 
-**Requirements for local signing** — neither is bundled:
+**Requirements for local signing** — not bundled:
 
 * **Node.js** — it also provides `npm`, which the plugin uses.
-* **Google Chrome** — **Microsoft Edge** works too. Puppeteer's own browser
-  download is deliberately skipped, so an installed browser is required.
 
 On first start the plugin installs the sign server's dependencies by itself
 (`npm install`, one time, a minute or so); TikTok connects from the **next OBS
-start**. If Node.js or Chrome is missing, local signing cannot run — install
-them, or turn on **Alternative Connection Mode**.
+start**. If Node.js is missing, local signing cannot run — install it, or turn
+on **Alternative Connection Mode**.
 
 ## HTTP surface
 
