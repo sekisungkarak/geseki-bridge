@@ -63,22 +63,6 @@ jobs:
           Copy-Item "bin/geseki-bridge-tiktok.exe" $dest -Force
           Get-ChildItem -Recurse release | Select-Object FullName
 
-      - name: Place the local sign server next to the plugin DLL
-        run: |
-          # The local sign server (Node) signs TikTok on this machine, with no
-          # third-party service. Ship the sources only: node_modules (~55 MB)
-          # is installed on first run by the plugin, and Chrome is taken from
-          # the user's machine.
-          $dest = "release/obs-plugins/64bit/sign-server"
-          New-Item -ItemType Directory -Force -Path $dest | Out-Null
-          Copy-Item "sign-server/server.mjs" $dest -Force
-          Copy-Item "sign-server/xgnarly.mjs" $dest -Force
-          Copy-Item "sign-server/package.json" $dest -Force
-          Copy-Item "sign-server/package-lock.json" $dest -Force
-          Copy-Item "sign-server/README.md" $dest -Force
-          Copy-Item "sign-server/javascript" $dest -Recurse -Force
-          Get-ChildItem -Recurse $dest | Select-Object FullName
-
       - name: Package
         run: |
           $version = (Get-Content buildspec.json -Raw | ConvertFrom-Json).version

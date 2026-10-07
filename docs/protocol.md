@@ -34,13 +34,13 @@ The plugin also answers a small HTTP surface (outside the upgrade):
 `GET /health` returns:
 
 ```json
-{ "ok": true, "bridge": "geseki-bridge/0.7.0", "protocol": 1 }
+{ "ok": true, "bridge": "geseki-bridge/0.7.1", "protocol": 1 }
 ```
 
 `GET /bridge-port` returns:
 
 ```json
-{ "ok": true, "bridge": "geseki-bridge/0.7.0", "protocol": 1, "wsPort": 47800, "discoveryPort": 47800 }
+{ "ok": true, "bridge": "geseki-bridge/0.7.1", "protocol": 1, "wsPort": 47800, "discoveryPort": 47800 }
 ```
 
 ### Port discovery
@@ -78,7 +78,7 @@ Sent once, immediately after the socket opens.
 {
   "type": "hello",
   "protocol": 1,
-  "bridge": "geseki-bridge/0.7.0",
+  "bridge": "geseki-bridge/0.7.1",
   "capabilities": ["tiktok", "nowplaying"]
 }
 ```
@@ -230,7 +230,7 @@ REST payload used, so existing widget code keeps working.
 {
   "type": "nowplaying",
   "data": {
-    "app_version": "0.7.0",
+    "app_version": "0.7.1",
     "current_session_id": "Spotify.exe",
     "sessions": [
       {
@@ -331,16 +331,12 @@ The TikTok sidecar is a small Go binary wrapping
   replaced `/webcast/im/fetch`, which TikTok now answers with 200 and an empty
   body. It returns the same protobuf and needs no signature, so a connection
   works with no sign server and no Node.js installed.
-* A signer is kept only as a **fallback** for when that endpoint is
-  unavailable. Which signer it is depends on `alt_connection`:
-* **Local sign server (default fallback).** With `alt_connection` off, the
-  plugin starts `sign-server/` (a small Node program) and passes its URL to
-  the sidecar as `signerUrl`. Signing happens on this machine: no third-party
-  service, no shared rate limit. It needs Node.js on `PATH`.
-* **Euler Stream (alternative fallback).** With `alt_connection` on, no local
-  `signerUrl` is sent and the sidecar falls back to the library's built-in
-  remote service. That service is subject to a shared rate limit, which
-  `tiktok_api_key` raises.
+* A remote signer is kept only as a **fallback** for when that endpoint is
+  unavailable. It is selected by the optional `tiktok_api_key`, which also
+  raises that service's shared rate limit.
+* The plugin no longer starts a local sign server. Its sources stay in the
+  repository (`sign-server/`) for reference, but they are not shipped with a
+  release and are never run.
 * The API key is stored in the plugin's config, never in a widget URL.
 
 Sidecar protocol (internal, not public API):
@@ -348,7 +344,6 @@ Sidecar protocol (internal, not public API):
 | Direction | Message |
 | --- | --- |
 | plugin → sidecar | `{"cmd":"connect","username":"…","connectUrl":"https://api.eulerstream.com"}` (direct, no signer) |
-| plugin → sidecar | `{"cmd":"connect","username":"…","signerUrl":"http://127.0.0.1:8090"}` (local signer as fallback) |
 | plugin → sidecar | `{"cmd":"connect","username":"…","apiKey":"…"}` (Euler Stream as fallback) |
 | plugin → sidecar | `{"cmd":"disconnect"}` |
 | plugin → sidecar | `{"cmd":"quit"}` |

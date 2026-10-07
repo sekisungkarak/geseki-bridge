@@ -1000,14 +1000,11 @@ void OnSidecarMessage(const std::string &line)
 // bring it back if it dies.
 // ------------------------------------------------------- local sign server
 //
-// TikTok room data now comes from a signature-free endpoint, so connecting
-// needs no signer at all. This sign server is an optional fallback for when
-// that endpoint is unavailable: sign-server/ is a small Node program that
-// drives headless Chrome and borrows TikTok's own signing code, so no
-// third-party service is involved and there is no shared rate limit.
-//
-// Node is NOT bundled. When it is missing the fallback simply cannot run,
-// and the connection still works through the signature-free endpoint.
+// NOTE: the plugin NO LONGER STARTS THIS. TikTok room data comes from a
+// signature-free endpoint, and the optional API key is the only fallback, so
+// the launcher below is kept for reference only and is never called. The
+// sources of the sign server itself stay in the repository (sign-server/),
+// but they are not shipped with a release and are not run by the plugin.
 
 std::mutex g_signer_mu;
 HANDLE g_signer_proc = nullptr;
@@ -1629,17 +1626,11 @@ void StopSignServer()
 
 void StartSidecar(const std::string &username, const std::string &apiKey)
 {
-	// Resolve everything once, before the state lock, so the supervisor loop
-	// reuses the same values when it restarts the sidecar. The alternative
-	// mode signs remotely and therefore needs no sign server.
-	bool alt = false;
+	// The plugin no longer starts a local sign server, so the sidecar never
+	// receives a local signer URL. It reaches TikTok through the
+	// signature-free endpoint and, when the user set one, falls back to the
+	// remote signer selected by the API key.
 	std::string signer;
-	{
-		std::lock_guard<std::mutex> lk(g_cfg_mu);
-		alt = g_cfg.alt_connection;
-		if (!alt && SignServerRunning())
-			signer = SignerUrlFor(g_cfg.sign_server_port);
-	}
 	{
 		std::lock_guard<std::mutex> lk(g_tt_mu);
 		// A local sign server is no longer required: the sidecar fetches room
@@ -2278,10 +2269,6 @@ void Start()
 		g_tiktok_avatar.clear();
 	}
 
-	// Bring the local signer up first: the sidecar asks the signer for its
-	// limits the moment it connects, so it must already be listening.
-	StartSignServer(cfg.sign_server_port);
-
 	if (cfg.tiktok_autoconnect && !cfg.tiktok_username.empty())
 		StartSidecar(cfg.tiktok_username, cfg.tiktok_api_key);
 
@@ -2301,9 +2288,6 @@ void Stop()
 		std::lock_guard<std::mutex> lk(g_tt_call_mu);
 		geseki::tiktok::Stop();
 	}
-	// The sign server is ours: never leave an orphan Node behind.
-	StopSignServer();
-
 	// Wake every open socket so its recv() returns; the handlers then unwind.
 	{
 		std::lock_guard<std::mutex> lk(g_clients_mu);

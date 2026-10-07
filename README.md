@@ -33,15 +33,7 @@ on the next OBS start.
 | Path | How | Needs |
 | --- | --- | --- |
 | **Primary** | Connects directly, no signing step on this machine | nothing |
-| **Fallback: local sign server** | Used only if the primary path fails; the plugin runs `sign-server/` locally | **Node.js** |
 | **Fallback: Euler Stream** | Used only if the primary path fails; an optional API key raises its rate limit | nothing |
-
-**Node.js is optional.** It is only used by the local sign server, one of the
-two fallbacks for when the direct connection is unavailable. If Node.js is missing
-the plugin says so in the log and connects anyway. Install it only if you want
-that fallback; the plugin then installs the sign server's dependencies by
-itself (`npm install`, one time) and the fallback is available from the **next
-OBS start**.
 
 ## HTTP surface
 
@@ -93,7 +85,6 @@ extract it straight into OBS.
    ```
    <OBS>\obs-plugins\64bit\geseki-bridge.dll
    <OBS>\obs-plugins\64bit\geseki-bridge-tiktok.exe
-   <OBS>\obs-plugins\64bit\sign-server\        (local signing, see above)
    <OBS>\data\obs-plugins\geseki-bridge\locale\en-US.ini
    ```
    * **Portable OBS:** just unzipped into the OBS Folder
@@ -102,10 +93,6 @@ extract it straight into OBS.
 3. Restart OBS. A **Geseki** item appears under *Tools*, holding **Settings**
    and **Backup**.
 
-`sign-server/` ships its sources only — its `node_modules/` (about 55 MB) is
-installed on first run, as described above. Keep that folder next to the DLL:
-without it, local signing cannot start.
-
 ## License
 
 GPL-2.0-or-later (see [`LICENSE`](LICENSE)) — the same license OBS itself uses,
@@ -113,6 +100,4 @@ and required for the `obs-frontend-api` linkage.
 
 The Go sidecar depends on
 [`steampoweredtaco/gotiktoklive`](https://github.com/steampoweredtaco/gotiktoklive),
-which is **MIT** licensed. The local sign server is based on
-[`carcabot/tiktok-signature`](https://github.com/carcabot/tiktok-signature)
-(MIT).
+which is **MIT** licensed.

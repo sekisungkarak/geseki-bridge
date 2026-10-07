@@ -12,14 +12,11 @@ struct Config {
 	std::string tiktok_username;
 	std::string tiktok_api_key;
 	bool tiktok_autoconnect = false;
-	// Fallback signer: room data normally comes from a signature-free
-	// endpoint that needs nothing installed, and this only selects the
-	// signer used when that primary path fails. On: Euler Stream (subject
-	// to a shared rate limit, which tiktok_api_key can raise). Off: the
-	// local sign server.
+	// Retained for config compatibility. The plugin no longer starts a local
+	// sign server: room data comes from a signature-free endpoint, and the
+	// optional tiktok_api_key is the only fallback. Both fields are still
+	// read and written so existing config files keep working unchanged.
 	bool alt_connection = false;
-	// Port of the local sign server (needs Node.js on PATH). Used only
-	// while the fallback above is set to the local sign server.
 	int sign_server_port = 8090;
 };
 

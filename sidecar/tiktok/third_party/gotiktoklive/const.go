@@ -120,5 +120,5 @@ var (
 type ErrIPBlockedOrBanned struct{}
 
 func (e ErrIPBlockedOrBanned) Error() string {
-	return "your IP or country might be blocked by TikTok or Signer service or you might be banned, please try again with a vpn, proxy, or different credentials"
+	return "Connection refused by TikTok. Retrying..."
 }

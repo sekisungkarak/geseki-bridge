@@ -23,7 +23,7 @@ import (
 	gotiktoklive "github.com/steampoweredtaco/gotiktoklive"
 )
 
-const version = "0.7.0"
+const version = "0.7.1"
 
 // ---------------------------------------------------------------- stdio I/O
 
@@ -94,8 +94,8 @@ func stopSession() {
 type connectCmd struct {
 	Cmd      string `json:"cmd"`
 	Username string `json:"username"`
-	// SignerUrl is the local sign server. Set unless the user turned on
-	// the alternative connection mode.
+	// SignerUrl is an optional remote signer. The plugin no longer runs a
+	// local sign server, so this is normally empty.
 	SignerUrl string `json:"signerUrl"`
 	// ConnectUrl overrides the signature-free /connect endpoint. Empty
 	// means the built-in default.
@@ -114,9 +114,9 @@ func handleConnect(c connectCmd) {
 		return
 	}
 	// The signature-free /connect endpoint is the primary path: it needs no
-	// sign server, so TikTok works with no Node.js installed. A signer is kept
-	// only as a fallback for when that endpoint is unavailable: the local one
-	// when the plugin supplies it, otherwise Euler's (with the optional key).
+	// sign server, so TikTok works with nothing installed. A remote signer is
+	// kept only as a fallback for when that endpoint is unavailable, selected
+	// by the optional API key.
 	opts := []gotiktoklive.TikTokLiveOption{}
 	if c.ConnectUrl != "" {
 		opts = append(opts, gotiktoklive.ConnectUrl(c.ConnectUrl))
@@ -124,7 +124,7 @@ func handleConnect(c connectCmd) {
 	switch {
 	case c.SignerUrl != "":
 		opts = append(opts, gotiktoklive.SigningUrl(c.SignerUrl))
-		logf("local sign server %s available as fallback", c.SignerUrl)
+		logf("signer %s available as fallback", c.SignerUrl)
 	case c.APIKey != "":
 		opts = append(opts, gotiktoklive.SigningApiKey(c.APIKey))
 		logf("using Euler signer as fallback (with API key)")
@@ -141,13 +141,11 @@ func handleConnect(c connectCmd) {
 	go runWithSigner(ctx, cancel, opts, username)
 }
 
-// runWithSigner builds the TikTok client, retrying while the signer is not
-// ready yet.
+// runWithSigner builds the TikTok client, retrying while the remote signer
+// (when one is configured) is not ready yet.
 //
 // NewTikTok queries the signer for its rate limits before returning, so a
-// signer that is still starting makes it fail with a connection error. The
-// local sign server starts at the same moment as this sidecar but needs
-// ~30-90s to bring up its browser, so that window is the normal case: giving
+// signer that is still starting makes it fail with a connection error. Giving
 // up here would leave the widget silent until the user reconnected by hand.
 // Retry with the usual backoff, then hand over to runSession.
 func runWithSigner(ctx context.Context, cancel context.CancelFunc, opts []gotiktoklive.TikTokLiveOption, username string) {
@@ -162,7 +160,7 @@ func runWithSigner(ctx context.Context, cancel context.CancelFunc, opts []gotikt
 			return
 		}
 		logf("init failed: %v (retry in %s)", err, delay)
-		emitState("connecting", "waiting for sign server")
+		emitState("connecting", "")
 		if !sleepBackoff(ctx, &delay) {
 			return
 		}
@@ -488,16 +486,22 @@ func notLiveError(err error) bool {
 // TikTok answers for /webcast/im/fetch when the X-Gnarly signature is stale
 // (the other webcast endpoints keep working, so this is not an IP ban).
 func blockedError(err error) bool {
-	var blocked *gotiktoklive.ErrIPBlockedOrBanned
-	if errors.As(err, &blocked) {
+	// Deteksi berbasis TIPE, bukan teks: pesan error boleh berubah tanpa
+	// memutus klasifikasi. Cocokkan pointer (yang dikembalikan library) dan
+	// nilai (yang muncul bila dibungkus tanpa alamat).
+	var blockedPtr *gotiktoklive.ErrIPBlockedOrBanned
+	if errors.As(err, &blockedPtr) {
+		return true
+	}
+	var blockedVal gotiktoklive.ErrIPBlockedOrBanned
+	if errors.As(err, &blockedVal) {
 		return true
 	}
 	// Jaring pengaman: adapter lama memetakan 403 menjadi 502, dan sebagian
 	// jalur membungkusnya tanpa tipe. Cocokkan pada teksnya juga.
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "status code 403") ||
-		strings.Contains(msg, "status code 502") ||
-		strings.Contains(msg, "ip or country might be blocked")
+		strings.Contains(msg, "status code 502")
 }
 
 // waitForLivePoll sleeps one steady interval, returning false when the context

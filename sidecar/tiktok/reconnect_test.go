@@ -148,7 +148,9 @@ func TestBlockedError(t *testing.T) {
 		pkgerrors.Wrap(&gotiktoklive.ErrIPBlockedOrBanned{}, "Failed to sign request"),
 		errors.New("received status code 403"),
 		errors.New("received status code 502"),
-		errors.New("your IP or country might be blocked by TikTok"),
+		// Deteksi utama berbasis TIPE (pointer + nilai), jadi pesan error
+		// boleh berubah tanpa memutus klasifikasi. Kasus teks lama yang
+		// menyalin pesan ErrIPBlockedOrBanned sudah tidak relevan.
 	}
 	for _, err := range blocked {
 		if !blockedError(err) {
