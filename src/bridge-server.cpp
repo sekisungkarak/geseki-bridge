@@ -1000,14 +1000,14 @@ void OnSidecarMessage(const std::string &line)
 // bring it back if it dies.
 // ------------------------------------------------------- local sign server
 //
-// TikTok needs every request signed. The default is to sign locally:
-// sign-server/ is a small Node program that drives headless Chrome and
-// borrows TikTok's own signing code, so no third-party service is involved
-// and there is no shared rate limit.
+// TikTok room data now comes from a signature-free endpoint, so connecting
+// needs no signer at all. This sign server is an optional fallback for when
+// that endpoint is unavailable: sign-server/ is a small Node program that
+// drives headless Chrome and borrows TikTok's own signing code, so no
+// third-party service is involved and there is no shared rate limit.
 //
-// Node is NOT bundled. When it is missing the sign server cannot run, and
-// the user can turn on the Alternative Connection Mode to sign remotely
-// instead.
+// Node is NOT bundled. When it is missing the fallback simply cannot run,
+// and the connection still works through the signature-free endpoint.
 
 std::mutex g_signer_mu;
 HANDLE g_signer_proc = nullptr;
@@ -1054,8 +1054,8 @@ std::string ModuleDir()
 	return WideToUtf8(dir);
 }
 
-// True when `node` can be run. There is no fallback signer any more, so a
-// missing Node means TikTok cannot connect at all — callers say so.
+// True when `node` can be run. Node only powers the optional local sign
+// server: TikTok connects through a signature-free endpoint without it.
 bool NodeAvailable()
 {
 	wchar_t buf[MAX_PATH]{};
@@ -1463,34 +1463,37 @@ bool StartSignServer(int port)
 	}
 
 	if (!NodeAvailable()) {
-		obs_log(LOG_ERROR, "geseki-bridge: Node.js not found; TikTok cannot "
-				     "connect. Install Node.js and Google Chrome.");
+		// Not fatal: the sidecar reaches TikTok through a signature-free
+		// endpoint, so the sign server is only a fallback. Say so once, at
+		// warning level, instead of implying the connection is broken.
+		obs_log(LOG_WARNING, "geseki-bridge: Node.js not found; the local sign "
+				     "server is unavailable (optional fallback). TikTok still "
+				     "connects without it.");
 		return false;
 	}
 
 	const std::string dir = ModuleDir() + "\\sign-server";
 	const std::string script = dir + "\\server.mjs";
 	if (GetFileAttributesW(Utf8ToWide(script).c_str()) == INVALID_FILE_ATTRIBUTES) {
-		obs_log(LOG_ERROR, "geseki-bridge: sign-server not found next to the "
-				     "plugin; TikTok cannot connect");
+		obs_log(LOG_WARNING, "geseki-bridge: sign-server not found next to the "
+				     "plugin; the optional fallback signer is unavailable");
 		return false;
 	}
 
 	// Dependencies are installed once, on a worker thread: `npm install` can
-	// take a minute and must never stall OBS startup. There is no fallback
-	// signer, so TikTok stays unavailable until the install finishes and OBS
-	// is restarted.
+	// take a minute and must never stall OBS startup. This only prepares the
+	// optional fallback signer, so TikTok connects either way.
 	if (!SignServerDepsReady(dir)) {
 		obs_log(LOG_WARNING, "geseki-bridge: installing sign-server dependencies "
-				      "(one time, needs Node.js) — TikTok cannot connect "
-				      "until this finishes; restart OBS afterwards");
+				      "(optional fallback) — TikTok connects without it; "
+				      "restart OBS to make the fallback available");
 		std::thread([dir] {
 			if (RunNpmInstall(dir))
 				obs_log(LOG_INFO, "geseki-bridge: sign-server dependencies installed; "
-						   "restart OBS to connect to TikTok");
+						   "the fallback signer is ready after an OBS restart");
 			else
-				obs_log(LOG_ERROR, "geseki-bridge: sign-server dependency install "
-						    "failed; TikTok cannot connect");
+				obs_log(LOG_WARNING, "geseki-bridge: sign-server dependency install "
+						    "failed; the optional fallback signer is unavailable");
 		}).detach();
 		return false;
 	}
@@ -1639,7 +1642,10 @@ void StartSidecar(const std::string &username, const std::string &apiKey)
 	}
 	{
 		std::lock_guard<std::mutex> lk(g_tt_mu);
-		g_tt_should_run = !username.empty() && (alt || !signer.empty());
+		// A local sign server is no longer required: the sidecar fetches room
+		// data through a signature-free endpoint, and the signer is only a
+		// fallback. So the connection runs even when the signer is missing.
+		g_tt_should_run = !username.empty();
 		g_tt_user = username;
 		g_tt_key = apiKey;
 		g_tt_signer = signer;
@@ -1648,14 +1654,6 @@ void StartSidecar(const std::string &username, const std::string &apiKey)
 		std::lock_guard<std::mutex> lk(g_tt_call_mu);
 		geseki::tiktok::Stop();
 		SetTikTokStatus("off", "");
-		return;
-	}
-	if (!alt && signer.empty()) {
-		// Local signing was asked for, but the sign server is not up: without
-		// a signature nothing can connect. Say why, and name the way out.
-		SetTikTokStatus("error",
-				"local sign server unavailable - turn on Alternative "
-				"Connection Mode, or install Node.js and Google Chrome");
 		return;
 	}
 	SetTikTokStatus("connecting", "");

@@ -235,10 +235,7 @@ func (l *Live) getRoomData() error {
 		params["cursor"] = l.cursor
 	}
 
-	body, headers, err := t.sendRequest(&reqOptions{
-		Endpoint: urlRoomData,
-		Query:    params,
-	}, nil)
+	body, headers, err := l.fetchRoomData(params)
 	if err != nil {
 		return err
 	}
@@ -301,6 +298,64 @@ func (l *Live) getRoomData() error {
 	}
 
 	return nil
+}
+
+// fetchRoomData returns the room's initial payload. The signature-free
+// /connect endpoint is tried first, so a machine with no sign server (and no
+// Node.js) still connects; the sign server is the fallback for when /connect
+// is unavailable.
+func (l *Live) fetchRoomData(params map[string]string) ([]byte, http.Header, error) {
+	if l.t.connectUrl != "" {
+		body, headers, err := l.fetchViaConnect()
+		if err == nil {
+			return body, headers, nil
+		}
+		l.t.debugHandler("signature-free /connect unavailable, using sign server: %v", err)
+	}
+	return l.t.sendRequest(&reqOptions{
+		Endpoint: urlRoomData,
+		Query:    params,
+	}, nil)
+}
+
+// fetchViaConnect calls /connect directly. It replaced /webcast/im/fetch, which
+// TikTok now answers with 200 and an empty body, and unlike it needs no
+// signature — hence no sign server.
+func (l *Live) fetchViaConnect() ([]byte, http.Header, error) {
+	q := url.Values{}
+	q.Set("client", "ttlive-node")
+	q.Set("cursor", "")
+	q.Set("client_enter", "true")
+	q.Set("platform", "web")
+	q.Set("user_agent", connectUserAgent)
+	uri := strings.TrimRight(l.t.connectUrl, "/") + "/" +
+		fmt.Sprintf(urlConnect, url.PathEscape(l.ID)) + "?" + q.Encode()
+
+	req, err := http.NewRequest("GET", uri, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	req.Header.Set("Accept", "application/protobuf,application/json")
+	req.Header.Set("User-Agent", connectClientUA)
+
+	resp, err := l.t.c.Do(req)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, resp.Header, fmt.Errorf("connect returned status %d", resp.StatusCode)
+	}
+	// Refusals come back as 200 with an empty body; a valid reply is tens of KB.
+	if len(body) == 0 {
+		return nil, resp.Header, &ErrIPBlockedOrBanned{}
+	}
+	return body, resp.Header, nil
 }
 
 // DownloadStream will download the stream to an .mkv file.

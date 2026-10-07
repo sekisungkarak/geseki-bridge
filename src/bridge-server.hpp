@@ -12,12 +12,14 @@ struct Config {
 	std::string tiktok_username;
 	std::string tiktok_api_key;
 	bool tiktok_autoconnect = false;
-	// Alternative Connection Mode: sign through a remote signing service
-	// instead of the local sign server. Off by default; that service is
-	// subject to a shared rate limit, which tiktok_api_key can raise.
+	// Fallback signer: room data normally comes from a signature-free
+	// endpoint that needs nothing installed, and this only selects the
+	// signer used when that primary path fails. On: Euler Stream (subject
+	// to a shared rate limit, which tiktok_api_key can raise). Off: the
+	// local sign server.
 	bool alt_connection = false;
-	// Port of the local sign server (needs Node.js on PATH and Chrome
-	// installed). Unused while the alternative mode is on.
+	// Port of the local sign server (needs Node.js on PATH). Used only
+	// while the fallback above is set to the local sign server.
 	int sign_server_port = 8090;
 };
 

@@ -21,6 +21,15 @@ func SigningUrl(url string) TikTokLiveOption {
 	}
 }
 
+// ConnectUrl overrides the signature-free /connect endpoint used to fetch
+// room data without a sign server. The default is https://api.eulerstream.com.
+func ConnectUrl(url string) TikTokLiveOption {
+	return func(t *TikTok) error {
+		t.connectUrl = url
+		return nil
+	}
+}
+
 // DisableSigningLimitsValidation will disable querying the signer for limits and using those as the reasonable limits
 // for signing requests per second. Instead, this library will be limited to signing only 5 signing requests per minute
 // and may limit functionality compared to the request limit the signer provides.

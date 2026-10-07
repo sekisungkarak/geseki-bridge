@@ -23,6 +23,15 @@ const (
 	// added slash is intention to simplify the base signer url which is now configurable.
 	urlSignReq = "/webcast/fetch/"
 
+	// /connect replaced /webcast/im/fetch, which TikTok now answers with 200
+	// and an EMPTY body. /connect returns the same protobuf and needs no
+	// signature, so room data can be fetched with no sign server at all.
+	urlConnect        = "webcast/rooms/%s/connect"
+	defaultConnectURL = "https://api.eulerstream.com"
+	// /connect only answers requests that look like this exact client.
+	connectUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
+	connectClientUA  = "tiktok-live-connector/2.5.0 win32"
+
 	urlCheckLive      = "room/check_alive/"
 	clientNameDefault = "gotiktok_live"
 	apiKeyDefault     = ""

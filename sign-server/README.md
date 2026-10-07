@@ -88,8 +88,8 @@ signer has no quota, so a generous ceiling is reported.
 ## Running it
 
 The bridge starts this server automatically when **Node.js is on `PATH`**; it
-is not bundled. Without Node the sign server cannot run, and TikTok connects
-only if the user turns on the Alternative Connection Mode.
+is not bundled. It is only a fallback: TikTok connects without it through a
+signature-free endpoint, so a missing Node.js never blocks a connection.
 
 To run it by hand:
 

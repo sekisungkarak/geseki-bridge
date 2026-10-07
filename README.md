@@ -25,24 +25,23 @@ first.
   app ids of every active Windows media session — the same content the old SMTC
   Bridge `/sessions` page showed.
 
-## TikTok signing
+## TikTok connection
 
-Every TikTok request must be signed, and there are two ways to do it. Both live
-in *Settings*; **local signing is the default**.
+Nothing extra to install: connect your username in *Settings* and TikTok works
+on the next OBS start.
 
-| Mode | How | Needs |
+| Path | How | Needs |
 | --- | --- | --- |
-| **Local sign server** (default) | The plugin runs `sign-server/` on this machine | **Node.js** |
-| **Alternative Connection Mode** | Signs through a remote signing service instead; an optional API key raises its rate limit | nothing |
+| **Primary** | Connects directly, no signing step on this machine | nothing |
+| **Fallback: local sign server** | Used only if the primary path fails; the plugin runs `sign-server/` locally | **Node.js** |
+| **Fallback: Euler Stream** | Used only if the primary path fails; an optional API key raises its rate limit | nothing |
 
-**Requirements for local signing** — not bundled:
-
-* **Node.js** — it also provides `npm`, which the plugin uses.
-
-On first start the plugin installs the sign server's dependencies by itself
-(`npm install`, one time, a minute or so); TikTok connects from the **next OBS
-start**. If Node.js is missing, local signing cannot run — install it, or turn
-on **Alternative Connection Mode**.
+**Node.js is optional.** It is only used by the local sign server, one of the
+two fallbacks for when the direct connection is unavailable. If Node.js is missing
+the plugin says so in the log and connects anyway. Install it only if you want
+that fallback; the plugin then installs the sign server's dependencies by
+itself (`npm install`, one time) and the fallback is available from the **next
+OBS start**.
 
 ## HTTP surface
 

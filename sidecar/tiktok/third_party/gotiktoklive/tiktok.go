@@ -58,6 +58,7 @@ type TikTok struct {
 	wsTraceChan              chan struct{ direction, hex string }
 	wsTraceOut               *bufio.Writer
 	signerUrl                string
+	connectUrl               string
 	getLimits                bool
 	limiter                  ratelimit.Limiter
 }
@@ -91,6 +92,7 @@ func NewTikTokWithApiKey(clientName, apiKey string, options ...TikTokLiveOption)
 		debugHandler:    routineErrHandler,
 		errHandler:      routineErrHandler,
 		signerUrl:       defaultSignerURL,
+		connectUrl:      defaultConnectURL,
 		clientName:      clientName,
 		apiKey:          apiKey,
 		shouldReconnect: true,
@@ -112,7 +114,7 @@ func NewTikTokWithApiKey(clientName, apiKey string, options ...TikTokLiveOption)
 		cancel()
 		return nil, err
 	}
-	if tiktok.getLimits {
+	if tiktok.getLimits && tiktok.signerUrl != "" {
 		limits, err := GetSignerLimits(tiktok.signerUrl, tiktok.apiKey)
 		if err != nil {
 			cancel()

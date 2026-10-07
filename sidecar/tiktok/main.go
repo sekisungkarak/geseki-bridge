@@ -23,7 +23,7 @@ import (
 	gotiktoklive "github.com/steampoweredtaco/gotiktoklive"
 )
 
-const version = "0.6.0"
+const version = "0.7.0"
 
 // ---------------------------------------------------------------- stdio I/O
 
@@ -97,6 +97,9 @@ type connectCmd struct {
 	// SignerUrl is the local sign server. Set unless the user turned on
 	// the alternative connection mode.
 	SignerUrl string `json:"signerUrl"`
+	// ConnectUrl overrides the signature-free /connect endpoint. Empty
+	// means the built-in default.
+	ConnectUrl string `json:"connectUrl"`
 	// APIKey is optional and belongs to the alternative connection mode,
 	// where it raises the signing rate limit. It is unused locally.
 	APIKey string `json:"apiKey"`
@@ -110,19 +113,26 @@ func handleConnect(c connectCmd) {
 		emitState("error", "missing username")
 		return
 	}
+	// The signature-free /connect endpoint is the primary path: it needs no
+	// sign server, so TikTok works with no Node.js installed. A signer is kept
+	// only as a fallback for when that endpoint is unavailable: the local one
+	// when the plugin supplies it, otherwise Euler's (with the optional key).
 	opts := []gotiktoklive.TikTokLiveOption{}
-	if c.SignerUrl != "" {
-		// Default: sign locally, no third-party service involved.
+	if c.ConnectUrl != "" {
+		opts = append(opts, gotiktoklive.ConnectUrl(c.ConnectUrl))
+	}
+	switch {
+	case c.SignerUrl != "":
 		opts = append(opts, gotiktoklive.SigningUrl(c.SignerUrl))
-		logf("using local sign server %s", c.SignerUrl)
-	} else {
-		// Alternative connection mode: sign through the library's own
-		// remote service. An API key is optional and only raises the
-		// limit it is subject to.
-		if c.APIKey != "" {
-			opts = append(opts, gotiktoklive.SigningApiKey(c.APIKey))
-		}
-		logf("using alternative connection mode")
+		logf("local sign server %s available as fallback", c.SignerUrl)
+	case c.APIKey != "":
+		opts = append(opts, gotiktoklive.SigningApiKey(c.APIKey))
+		logf("using Euler signer as fallback (with API key)")
+	default:
+		// No signer at all: clear it so the library does not query one that
+		// is not there. The connection is then signature-free end to end.
+		opts = append(opts, gotiktoklive.SigningUrl(""))
+		logf("using signature-free endpoint only")
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
