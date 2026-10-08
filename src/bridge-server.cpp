@@ -2,13 +2,13 @@
  * Geseki Bridge server.
  *
  * One loopback TCP listener that speaks:
- *   - WebSocket  (RFC 6455) at GET /ws   — the widget protocol (docs/protocol.md)
- *   - HTTP       GET /health             — liveness probe
- *   - HTTP       GET /bridge-port        — port discovery (also on fixed port 47800)
- *   - HTTP       POST /save?name=<file>  — write the body to the Downloads folder
- *   - HTTP       GET /now-playing        — legacy SMTC-Bridge compatible payload
- *   - HTTP       GET /artwork/<app_id>   — cached cover art (?v=<version>)
- *   - HTTP       GET /sessions           — Active Audio Sources page
+ *   - WebSocket  (RFC 6455) at GET /ws,   the widget protocol (docs/protocol.md)
+ *   - HTTP       GET /health,             liveness probe
+ *   - HTTP       GET /bridge-port,        port discovery (also on fixed port 47800)
+ *   - HTTP       POST /save?name=<file>,  write the body to the Downloads folder
+ *   - HTTP       GET /now-playing,        legacy SMTC-Bridge compatible payload
+ *   - HTTP       GET /artwork/<app_id>,   cached cover art (?v=<version>)
+ *   - HTTP       GET /sessions,           Active Audio Sources page
  *
  * The SMTC half replaces the old Python "SMTC Bridge" tray app: we poll
  * geseki::smtc (WinRT) on a worker thread, diff the snapshot, and push a
@@ -349,7 +349,7 @@ bool RecvLine(Socket s, std::string &out, size_t max = 8192)
 
 // --------------------------------------------------------------------- config
 
-// obs_module_config_path() only *builds* the path — it never creates the
+// obs_module_config_path() only *builds* the path, it never creates the
 // directory. On a fresh install plugin_config/geseki-bridge/ therefore does not
 // exist, and the first save died with
 //   os_quick_write_utf8_file_safe: failed to write to
@@ -789,7 +789,7 @@ std::string ArtworkUrl(const std::string &app_id, uint64_t version)
 
 // Refreshes the in-memory cache and returns the version for `app_id` (0 when we
 // hold no artwork for it). The version doubles as the cache-buster, and it only
-// changes when the bytes change — so a widget can cache the URL aggressively.
+// changes when the bytes change, so a widget can cache the URL aggressively.
 uint64_t UpdateArtworkCache(const std::vector<geseki::smtc::Session> &sessions,
 			    const std::string &app_id)
 {
@@ -1035,7 +1035,7 @@ std::atomic<unsigned long> g_signer_owner_pid{0};
 // forgotten one does not linger as an orphan.
 const int kSignerGraceMs = 3 * 60 * 1000;
 
-// Directory holding the plugin DLL — sign-server/ sits beside it.
+// Directory holding the plugin DLL, sign-server/ sits beside it.
 std::string ModuleDir()
 {
 	HMODULE self = nullptr;
@@ -1434,7 +1434,7 @@ bool StartSignServer(int port)
 				port, build.c_str());
 			// Do NOT rebuild the browser here. A restart re-warms the SDK
 			// against TikTok, and that is traffic from the user's IP, which
-			// TikTok rate-limits per address — the very thing that made
+			// TikTok rate-limits per address, the very thing that made
 			// restarting OBS hit the limit. A sign server only lives long
 			// enough to be adopted while its grace window is open, so it is
 			// minutes old at most: its Chrome is warm, not stale.
@@ -1482,7 +1482,7 @@ bool StartSignServer(int port)
 	// optional fallback signer, so TikTok connects either way.
 	if (!SignServerDepsReady(dir)) {
 		obs_log(LOG_WARNING, "geseki-bridge: installing sign-server dependencies "
-				      "(optional fallback) — TikTok connects without it; "
+				      "(optional fallback), TikTok connects without it; "
 				      "restart OBS to make the fallback available");
 		std::thread([dir] {
 			if (RunNpmInstall(dir))
@@ -1557,14 +1557,14 @@ void StopSignServer()
 	// itself down after kSignerGraceMs, and a new OBS that opens within that
 	// window adopts the warm browser session instead of warming a fresh one.
 	// Warming up means real requests to TikTok from the user's IP, and TikTok
-	// rate-limits per address — exactly why restarting OBS hit the limit while
+	// rate-limits per address, exactly why restarting OBS hit the limit while
 	// staying inside one session did not. When the request cannot be delivered
 	// we fall back to the old hard kill, so a sign server is never left behind
 	// for good.
 	//
 	// An adopted server may belong to another OBS that is still running, or
 	// be an orphan whose owner has exited. A live owner's server is left
-	// strictly alone — arming a grace timer on it would kill it mid-session.
+	// strictly alone, arming a grace timer on it would kill it mid-session.
 	// An orphan may be let go: it is a Geseki sign server nobody is using.
 	const bool ours = g_signer_ours.load();
 	const bool orphan = !ours && g_signer_known.load() &&
@@ -1581,7 +1581,7 @@ void StopSignServer()
 		// itself. Fall back to the hard kill: a sign server must never be
 		// left behind for good.
 		if (g_signer_proc) {
-			// Closing the job kills the WHOLE tree — cmd.exe, node.exe and
+			// Closing the job kills the WHOLE tree, cmd.exe, node.exe and
 			// every Chrome child. TerminateProcess on the cmd.exe handle
 			// alone left the rest running, which is how the orphan was born.
 			const DWORD pid = GetProcessId(g_signer_proc);
@@ -2132,7 +2132,7 @@ void AcceptLoop()
 // The fixed discovery listener. It answers GET /bridge-port with the port the
 // WebSocket is on, so a widget only needs to know this one constant. It runs
 // only when the WebSocket itself is NOT on kDiscoveryPort (then the main
-// listener already answers it) — see Start().
+// listener already answers it), see Start().
 void DiscoveryAcceptLoop()
 {
 	while (g_running.load()) {

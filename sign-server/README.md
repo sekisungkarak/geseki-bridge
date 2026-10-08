@@ -1,4 +1,4 @@
-# Geseki Bridge — local TikTok sign server
+# Geseki Bridge, local TikTok sign server
 
 A self-hosted sign server, so the plugin can connect to TikTok LIVE
 **without a third-party service and without a shared rate limit**.
@@ -59,10 +59,10 @@ Two mistakes keep the limit alive and are worth avoiding:
 
 `gotiktoklive` builds its room-data URL as
 `https://webcast.tiktok.com/webcast/` + `webcast/fetch/`, i.e.
-`/webcast/webcast/fetch/` — a 404. The real IM transport endpoint is
+`/webcast/webcast/fetch/`, a 404. The real IM transport endpoint is
 `/webcast/im/fetch/`. Two rules had to be respected:
 
-1. **The path must be `/webcast/im/fetch/`** — the doubled path is rewritten
+1. **The path must be `/webcast/im/fetch/`**, the doubled path is rewritten
    here before signing.
 2. **The `User-Agent` header must match the `browser_version` query param.**
    The signer encodes its own UA into the signature; if the Go library sends a
@@ -108,13 +108,13 @@ Environment (`.env`):
 | `PUPPETEER_EXECUTABLE_PATH` | Chrome to drive |
 | `PROXY_ENABLED`, `PROXY_HOST`, `PROXY_USER`, `PROXY_PASS` | optional outbound proxy |
 
-`node_modules/` and `.chrome-profile/` are not committed — run `npm install`
+`node_modules/` and `.chrome-profile/` are not committed, run `npm install`
 after cloning.
 
 ## Requirements
 
 * **Node.js** on `PATH` (the bridge only starts the server when it finds it).
-* **Google Chrome** installed — the signature is computed inside the browser
+* **Google Chrome** installed, the signature is computed inside the browser
   by TikTok's own `frontierSign`. Set `PUPPETEER_EXECUTABLE_PATH` if Chrome is
   in a non-standard location.
 

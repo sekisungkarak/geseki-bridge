@@ -1,5 +1,5 @@
 /*
- * Geseki Bridge — native backup dialog (Qt6).
+ * Geseki Bridge, native backup dialog (Qt6).
  *
  * Opened from Tools > Geseki > Backup. Three panels:
  *
@@ -252,7 +252,7 @@ void ShowBackupDialog(void *parent)
 			QString::fromStdString(report) +
 				"\n\nRestart OBS so the restored settings take effect. If some "
 				"widget settings did not come back, close OBS completely and "
-				"restore again — the browser storage is locked while OBS runs.");
+				"restore again, the browser storage is locked while OBS runs.");
 	});
 
 	// ── Save on close ────────────────────────────────────────────────────

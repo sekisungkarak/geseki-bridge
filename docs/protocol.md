@@ -1,4 +1,4 @@
-# Geseki Bridge — Wire Protocol (v1)
+# Geseki Bridge, Wire Protocol (v1)
 
 Geseki Bridge is an OBS plugin that exposes **one local endpoint** for every
 widget in the Geseki / Sekisungkarak suite. It replaces the three separate
@@ -61,7 +61,7 @@ otherwise blocks).
 
 `GET /now-playing` returns the same object as the `nowplaying` message's
 `data` field (below), so an existing SMTC-Bridge widget keeps working once it
-is pointed at this port — no WebSocket needed.
+is pointed at this port, no WebSocket needed.
 
 ---
 
@@ -103,7 +103,7 @@ Sent on connect and whenever a subsystem changes state. Lets a widget show
 
 **Reconnect.** The TikTok sidecar reconnects on its own when the live socket
 drops (network blip, TikTok closing the socket, an expired cursor). It retries
-with exponential backoff — 2 s, 4 s, 8 s, 16 s, then 30 s — and reports
+with exponential backoff, 2 s, 4 s, 8 s, 16 s, then 30 s, and reports
 `connecting` / `reconnecting` while it does. A session that stayed up for at
 least 30 s resets the backoff, so a long, healthy session reconnects quickly
 after a single blip.
@@ -111,7 +111,7 @@ after a single blip.
 **Not live is not a dead end.** When the streamer is not live yet (opening OBS
 before going live) or a stream has just ended, the sidecar reports
 `connecting` / `waiting for stream` and polls every 30 s, so a stream that
-starts later in the **same** OBS session connects by itself — no OBS restart.
+starts later in the **same** OBS session connects by itself, no OBS restart.
 It stops for good (`off`) only when the handle does not resolve, since retrying
 that would repeat the same failure. A new `tiktok.connect`, a `tiktok.disconnect`,
 or `quit` cancels a pending retry or wait.
@@ -130,15 +130,15 @@ A TikTok LIVE event, normalised to the shape the widgets already understand.
 | --------- | ------------------------------ | -------------------- |
 | `chat`    | a viewer posted a comment, **or a subscriber sent an emote (sticker)** | `comment`, `emotes` |
 | `gift`    | a gift was sent                | `giftName`, `giftPictureUrl`, `repeatCount`, `repeatEnd`, `giftType` |
-| `follow`  | a viewer followed              | — |
-| `share`   | a viewer shared the stream     | — |
-| `subscribe` | a viewer subscribed (new sub or renewal) | — |
-| `superFan` | a viewer became a Super Fan | — |
-| `superFanJoin` | an existing Super Fan entered the room | — |
+| `follow`  | a viewer followed              | - |
+| `share`   | a viewer shared the stream     | - |
+| `subscribe` | a viewer subscribed (new sub or renewal) | - |
+| `superFan` | a viewer became a Super Fan | - |
+| `superFanJoin` | an existing Super Fan entered the room | - |
 | `superFanBox` | a viewer sent a Super Fan Box | `diamondCount` |
 | `like`    | likes were sent                | `likeCount`, `totalLikes` |
 | `roomUser`| viewer count changed           | `viewerCount` |
-| `join`    | a viewer entered the room      | — |
+| `join`    | a viewer entered the room      | - |
 
 `subscribe` is produced from two TikTok messages: `WebcastSubNotifyMessage` (a
 subscription notice) and `WebcastMemberMessage` with action `SUBSCRIBED`. The
@@ -160,7 +160,7 @@ Fan is a paid tier, and TikTok signals it on its own messages.
   `SUPER_FAN_BOX` (19). It carries `diamondCount`; the sender is in the envelope's
   `sendUser*` fields.
 
-The old `subscribe` event is unchanged and still emitted — Super Fan does not
+The old `subscribe` event is unchanged and still emitted, Super Fan does not
 replace it. A barrage that carries no Super Fan marker is dropped, not forwarded.
 
 **Common `data` fields** (present when the source event carries a user):
@@ -198,7 +198,7 @@ replace it. A barrage that carries no Super Fan marker is dropped, not forwarded
   emote replaces inside `comment` (same contract as TikTok Live Connector).
   TikTok sends one placeholder char per emote; the widget swaps it for the
   image at that index.
-* `emotePrivateType`: `0` normal, `1` subscriber wave (`SUB_WAVE`) — how a
+* `emotePrivateType`: `0` normal, `1` subscriber wave (`SUB_WAVE`), how a
   subscriber emote is flagged.
 * The array is always present (possibly empty) on `chat`; widgets that ignore
   it render the placeholder character as before.
@@ -262,7 +262,7 @@ Notes:
   `4 PLAYING`, `5 PAUSED`.
 * `PlaybackType`: `0 UNKNOWN`, `1 MUSIC`, `2 VIDEO`, `3 IMAGE`.
 * Artwork is served by the bridge itself at `GET /artwork/<safe_app_id>` with a
-  cache-busting `?v=<n>` — **not** embedded as base64, so a big cover does not
+  cache-busting `?v=<n>`, **not** embedded as base64, so a big cover does not
   inflate every poll. `<n>` is a monotonic counter that only changes when the
   bytes change, so the URL is safe to cache.
 * The payload is pushed when it changes (and at least every 1 s while a session

@@ -136,7 +136,7 @@ func TestBlockedBackoffLadder(t *testing.T) {
 	}
 }
 
-// TestBlockedError: a refusal must be recognised however it arrives — typed,
+// TestBlockedError: a refusal must be recognised however it arrives, typed,
 // as a pointer, or wrapped by errors.Wrap on the way out of the library. This
 // is what selects the long refusal ladder instead of the short reconnect one;
 // when it misses, the sidecar keeps firing every 30s and the limit never
@@ -225,7 +225,7 @@ func TestTerminalTrackError(t *testing.T) {
 }
 
 // TestNotLiveError: "not live yet" and "stream ended" are the wait-and-poll
-// cases — not terminal — so the next stream in the same OBS session connects.
+// cases, not terminal, so the next stream in the same OBS session connects.
 func TestNotLiveError(t *testing.T) {
 	notLive := []error{
 		gotiktoklive.ErrUserOffline,

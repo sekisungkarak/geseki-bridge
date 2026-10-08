@@ -1,6 +1,6 @@
 #pragma once
 
-// Geseki Bridge — the widget docks and the Tools menu.
+// Geseki Bridge, the widget docks and the Tools menu.
 namespace geseki::docks {
 
 // Builds the Tools menu and, on OBS_FRONTEND_EVENT_FINISHED_LOADING, the

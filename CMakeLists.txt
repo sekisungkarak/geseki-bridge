@@ -51,7 +51,7 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE "${CMAKE_CURRENT_SOURCE
 
 # Windows-only bits: Winsock + shell for the settings page, WinRT for SMTC.
 # C++/WinRT is used in blocking mode (IAsyncOperation::get()), so the C++17
-# standard set by cmake/common/compiler_common.cmake is sufficient — no
+# standard set by cmake/common/compiler_common.cmake is sufficient, no
 # coroutines and no C++20 requirement.
 if(OS_WINDOWS)
   target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE ws2_32 shell32 windowsapp runtimeobject iphlpapi)

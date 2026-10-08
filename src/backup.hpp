@@ -6,7 +6,7 @@
 // Settings backup engine for the Geseki Bridge plugin (no Qt).
 //
 // A snapshot is a folder under the backup directory holding a copy of the
-// plugin's own config and of obs-browser's Local Storage — where every widget's
+// plugin's own config and of obs-browser's Local Storage, where every widget's
 // settings live. Folders, not a zip: the plugin ships no zip writer, and a plain
 // folder can be opened, inspected and copied by hand.
 namespace geseki::backup {

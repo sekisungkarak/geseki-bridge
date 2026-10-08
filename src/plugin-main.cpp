@@ -1,5 +1,5 @@
 /*
- * Geseki Bridge — OBS plugin entry point.
+ * Geseki Bridge, OBS plugin entry point.
  *
  * Registers the plugin, owns the bridge server lifetime, and builds the Tools
  * menu. All real work lives in bridge-server.cpp (local WebSocket + HTTP),
@@ -18,7 +18,7 @@ OBS_MODULE_USE_DEFAULT_LOCALE("geseki-bridge", "en-US")
 
 MODULE_EXPORT const char *obs_module_description(void)
 {
-	return "Geseki Bridge — one local endpoint for TikTok LIVE and Windows media, for Geseki widgets.";
+	return "Geseki Bridge, one local endpoint for TikTok LIVE and Windows media, for Geseki widgets.";
 }
 
 bool obs_module_load(void)

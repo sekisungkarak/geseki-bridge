@@ -1,4 +1,4 @@
-// Geseki Bridge — TikTok sidecar.
+// Geseki Bridge, TikTok sidecar.
 //
 // Wraps github.com/steampoweredtaco/gotiktoklive (MIT) and speaks
 // newline-delimited JSON over stdin/stdout so the OBS plugin can supervise it
@@ -174,7 +174,7 @@ func runWithSigner(ctx context.Context, cancel context.CancelFunc, opts []gotikt
 // exponential backoff.
 //
 // "Not live" is NOT a dead end. Opening OBS before going live, or a stream
-// that simply ended, used to stop the session for good — and because the
+// that simply ended, used to stop the session for good, and because the
 // process stayed alive the plugin never restarted it, so only an OBS restart
 // reconnected. The sidecar now waits and polls at a steady interval, so a
 // stream that starts later in the SAME OBS session connects by itself.
@@ -191,7 +191,7 @@ const (
 
 // blockedBackoffSteps is the wait ladder for a REFUSED connection (TikTok
 // answers 403 on the IM transport). It differs from an ordinary drop on
-// purpose: most refusals are a blip — a dropped socket, one unlucky request —
+// purpose: most refusals are a blip, a dropped socket, one unlucky request,
 // and recover within seconds, so the first steps stay SHORT. If they keep
 // coming, TikTok is rate-limiting the address and only clears after a few
 // QUIET minutes, which the ordinary 30s cap never allowed, so the ladder then
@@ -295,9 +295,9 @@ func runSession(ctx context.Context, cancel context.CancelFunc, tt *gotiktoklive
 		// it in the dashboard status pill, so report it once per session.
 		url := ownerAvatarURL(l)
 		if url == "" {
-			// room/info sometimes answers without an owner at all — TikTok
+			// room/info sometimes answers without an owner at all, TikTok
 			// returns status_code 4003110 with an empty payload for some
-			// rooms — and the pill would then sit on its placeholder for the
+			// rooms, and the pill would then sit on its placeholder for the
 			// whole session. The room-user page already fetched to resolve
 			// the room id carries the same picture, so fall back to it. Only
 			// paid when the primary source came back empty.
@@ -624,7 +624,7 @@ func emoteList(emotes []gotiktoklive.Emote) []interface{} {
 // widget-side change. TikTok sends a subscriber emote as its own message with no
 // comment text and no per-emote index, so we synthesise a comment of one
 // placeholder character per emote and assign each emote the 0-based index of its
-// placeholder — the same contract a real comment's emotes follow. The
+// placeholder, the same contract a real comment's emotes follow. The
 // placeholder is a zero-width space: invisible should a consumer ever show the
 // raw comment, and swapped for the artwork by the chat renderer.
 func standaloneEmoteAsChat(emotes []gotiktoklive.Emote) (string, []interface{}) {
@@ -669,7 +669,7 @@ func normalizeComment(comment string, emotes []gotiktoklive.Emote) string {
 // TikTok replays recent chat when a socket (re)connects, and the vendored
 // library tags those frames IsHistory within a 15-minute window. The widgets
 // keep no dedupe, so forwarding a replay re-adds the same questions to the
-// queue on every reconnect — the "queue grows on its own" bug. Drop them here.
+// queue on every reconnect, the "queue grows on its own" bug. Drop them here.
 func forwardable(ev gotiktoklive.Event) bool {
 	return !ev.IsHistory()
 }

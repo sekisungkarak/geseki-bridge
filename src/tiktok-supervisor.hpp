@@ -16,7 +16,7 @@ namespace geseki::tiktok {
 using MessageHandler = std::function<void(const std::string &line)>;
 
 // Starts the sidecar if the executable can be found next to the plugin.
-// Returns false (and logs) when the binary is missing — the rest of the bridge
+// Returns false (and logs) when the binary is missing, the rest of the bridge
 // keeps working, only TikTok stays unavailable.
 // `signerUrl` points the TikTok client at the local sign server. Leave it
 // empty to use the alternative connection mode instead; `apiKey` is only

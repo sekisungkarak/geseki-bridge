@@ -1,12 +1,12 @@
 /*
- * Geseki Bridge — the widget dock and the Tools menu.
+ * Geseki Bridge, the widget dock and the Tools menu.
  *
  *   Tools > Geseki > Geseki Bridge…                        (settings dialog)
  *
  * The dock is a CEF panel built by obs-browser and handed to OBS with
  * obs_frontend_add_dock_by_id(). That is the difference that matters here: a
  * dock registered this way belongs to the plugin, so OBS lists it in its own
- * Docks menu but never in the user's "Custom Browser Docks" list — it cannot be
+ * Docks menu but never in the user's "Custom Browser Docks" list, it cannot be
  * deleted from the UI, only hidden (the X button) and shown again from Docks.
  *
  * The earlier approach wrote an entry into `[BasicWindow] ExtraBrowserDocks`,
@@ -22,7 +22,7 @@
  *  - It is applied on the next event-loop turn, not inside the
  *    FINISHED_LOADING callback: OBS is still finishing its own window and dock
  *    setup at that point, and a setVisible() from there does not stick.
- *  - Every later change — OBS's Docks menu, the dock's X button — is written
+ *  - Every later change, OBS's Docks menu, the dock's X button, is written
  *    back through visibilityChanged, so the choice survives a restart.
  *
  * Hiding the dock also closes its CEF browser. OBS only hides the widget, and a
@@ -183,7 +183,7 @@ bool g_shutting_down = false;
 // back blank (white) when the dock is shown again: obs-browser only builds the
 // browser in showEvent when there is none, so it never recovers on its own.
 // Closing the browser as the dock is hidden lets that showEvent build a clean
-// one — the same thing OBS does for its own browser docks when they close.
+// one, the same thing OBS does for its own browser docks when they close.
 //
 // The hide is caught on the dock, not through visibilityChanged: OBS hides a
 // dock from its Docks menu with that dock's signals blocked, and an event is

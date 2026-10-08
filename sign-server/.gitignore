@@ -1,4 +1,4 @@
-# Dependencies and runtime state — installed on demand, never committed.
+# Dependencies and runtime state, installed on demand, never committed.
 node_modules/
 .chrome-profile/
 .env

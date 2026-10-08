@@ -1,5 +1,5 @@
 /*
- * Geseki Bridge — settings backup engine.
+ * Geseki Bridge, settings backup engine.
  *
  * A snapshot is a folder under the backup directory:
  *
@@ -8,13 +8,13 @@
  *     plugin_config/geseki-bridge/...    the plugin's own settings
  *     obs-browser/Local Storage/...      every widget's localStorage
  *
- * The default location is <plugin_config>\geseki-bridge\backup — beside the
+ * The default location is <plugin_config>\geseki-bridge\backup, beside the
  * plugin's config inside OBS's own config tree. That survives a browser-cache
  * wipe (localStorage lives in obs-browser's CEF profile, which OBS can clear)
  * and travels with a portable OBS install.
  *
- * Restore copies the files back. Files OBS currently holds open — the leveldb
- * Chromium keeps for Local Storage — cannot be replaced while OBS runs; those
+ * Restore copies the files back. Files OBS currently holds open, the leveldb
+ * Chromium keeps for Local Storage, cannot be replaced while OBS runs; those
  * are counted and reported so the user can close OBS and restore again. Nothing
  * is deleted first, so a failed restore never leaves the config half-wiped.
  */

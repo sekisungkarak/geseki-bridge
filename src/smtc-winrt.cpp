@@ -36,7 +36,7 @@ void EnsureApartment()
 		try {
 			winrt::init_apartment(winrt::apartment_type::multi_threaded);
 		} catch (...) {
-			// Already initialised by the host (OBS uses COM too) — fine.
+			// Already initialised by the host (OBS uses COM too), fine.
 		}
 	});
 }
@@ -130,7 +130,7 @@ Snapshot Poll()
 					// Every property below is a nullable IReference<T>. When
 					// a session does not report one, the reference comes back
 					// EMPTY, and calling .Value() on an empty reference is a
-					// null dereference inside the WinRT projection — an access
+					// null dereference inside the WinRT projection, an access
 					// violation that no catch(...) can intercept (it is SEH,
 					// not C++ EH). Each one must therefore be tested before
 					// its value is read; skipping that check crashed OBS.

@@ -48,7 +48,7 @@ const OWNER_PID = Number(process.env.GESEKI_OWNER_PID) || 0;
 // jalur tanda-tangan lama tidak bisa menghasilkan PushServer lagi.
 // /webcast/rooms/{roomId}/connect mengembalikan protobuf
 // ProtoMessageFetchResult yang SAMA (PushServer, cursor, routeParamsMap,
-// messages), tanpa tanda tangan — jadi sidecar Go tidak perlu diubah.
+// messages), tanpa tanda tangan, jadi sidecar Go tidak perlu diubah.
 // Arahkan ke signer lain lewat GESEKI_CONNECT_API bila perlu.
 const CONNECT_API = (process.env.GESEKI_CONNECT_API || "https://api.eulerstream.com").replace(/\/+$/, "");
 // UA ini yang terbukti diterima /connect (Mac Chrome). Jangan pakai DEFAULT_UA
@@ -140,7 +140,7 @@ let isProcessingQueue = false;
 // Grace shutdown. On a clean OBS exit the bridge asks us to quit after a
 // short delay instead of killing us, so reopening OBS adopts a warm browser
 // session. Every cold start re-warms the SDK against TikTok, and that is
-// traffic from the user's IP — which TikTok rate-limits per address.
+// traffic from the user's IP, which TikTok rate-limits per address.
 let graceTimer = null;
 const GRACE_MAX_MS = 10 * 60 * 1000;
 
@@ -228,7 +228,7 @@ async function initBrowser() {
       }
       // Windows: Puppeteer only knows about its own downloaded build, and we
       // deliberately skip that download, so find the installed Chrome here.
-      // Any Chrome works — the signature is computed by TikTok's own JS, not
+      // Any Chrome works, the signature is computed by TikTok's own JS, not
       // by a version-specific API.
       if (process.platform === "win32") {
         const winPaths = [
@@ -523,7 +523,7 @@ async function initWithLocalSdk() {
   await page.evaluate(() => window.scrollBy(0, 500));
   await new Promise((r) => setTimeout(r, 2000));
 
-  // Always reload after the initial load. First load is unreliable — sometimes
+  // Always reload after the initial load. First load is unreliable, sometimes
   // a blank/white page, sometimes the "Something went wrong" interstitial. The
   // reload primes the second pass with the cookies/msToken accumulated on the
   // first pass, after which the page bundle reliably emits signed requests.
@@ -683,7 +683,7 @@ async function _generateSignedUrlInternal(
     // Tear the session down and rebuild it, then retry the sign once.
     if (/SDK not initialized|SDK not ready/i.test(msg)) {
       console.log(
-        `[Server] "${msg}" — restarting browser session and retrying...`,
+        `[Server] "${msg}", restarting browser session and retrying...`,
       );
       try {
         await closeBrowser();
@@ -704,7 +704,7 @@ async function _signViaPageIntercept(targetUrl, navigateTo, userAgent = null) {
   const targetPath = new URL(targetUrl).pathname;
   const callStart = Date.now();
 
-  // Always navigate per call — that's the only reliable way to get a fresh
+  // Always navigate per call, that's the only reliable way to get a fresh
   // signed URL that TikTok will accept on external fetch. Cache-reuse and
   // scroll-trigger were both tried and produced unfetchable URLs.
   await page.goto(navigateTo, {
@@ -715,7 +715,7 @@ async function _signViaPageIntercept(targetUrl, navigateTo, userAgent = null) {
 
   // Wait for the permanent listener to capture a matching signed URL emitted
   // after this call started (rules out a stale entry left from a prior nav).
-  // Residential proxies can be slow — give it 15s.
+  // Residential proxies can be slow, give it 15s.
   const WAIT_MS = 15000;
   while (Date.now() - callStart < WAIT_MS) {
     const c = signedUrlCache.get(targetPath);
@@ -997,7 +997,7 @@ function parseResult(url, userAgent = null) {
  * (endpoint lain seperti room/info tetap 200 sepanjang waktu).
  *
  * Sesi TIDAK PERNAH dibangun ulang di sini. Membangun ulang browser berarti
- * warm-up penuh ke TikTok (navigasi + reload) dari IP yang sedang dibatasi —
+ * warm-up penuh ke TikTok (navigasi + reload) dari IP yang sedang dibatasi,
  * persis permintaan tambahan yang memperpanjang blokir. Dulu rebuild dipicu
  * setelah 5 penolakan; hasilnya jumlah generation turun (browser baru) justru
  * ketika IP sedang kena batas, jadi lingkaran yang memperburuk keadaan.
@@ -1158,7 +1158,7 @@ async function handleRequest(req, res) {
     // gotiktoklive builds the URL as tiktokAPIUrl + urlRoomData, i.e.
     //   https://webcast.tiktok.com/webcast/  +  webcast/fetch/
     // which is a 404. The real IM transport endpoint is /webcast/im/fetch/,
-    // so rewrite the path before signing — TikTok rejects a wrong path
+    // so rewrite the path before signing, TikTok rejects a wrong path
     // whatever the signature says.
     if (url.pathname.startsWith("/webcast/fetch")) {
       let target = url.searchParams.get("url");
@@ -1293,7 +1293,7 @@ async function handleRequest(req, res) {
       else if (cookies) outHeaders["X-Set-TT-Cookie"] = cookies;
       // Teruskan status ASLI TikTok, jangan dipetakan ke 502. Pemetaan 403->502
       // dulu menyamarkan penolakan TikTok sebagai "gateway error", sehingga
-      // klien tidak bisa membedakan blokir dari gangguan jaringan — dan
+      // klien tidak bisa membedakan blokir dari gangguan jaringan, dan
       // gotiktoklive kehilangan kemampuan mengenali 403 (ErrIPBlockedOrBanned).
       res.writeHead(status, outHeaders);
       res.end(body);
