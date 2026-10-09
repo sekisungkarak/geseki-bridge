@@ -27,6 +27,7 @@ The plugin also answers a small HTTP surface (outside the upgrade):
 | --- | --- | --- |
 | `GET` | `/health` | liveness probe |
 | `GET` | `/bridge-port` | port discovery: which port the WebSocket is on |
+| `GET` | `/obs-port` | obs-websocket port (read from its own config), for OBS sync |
 | `GET` | `/now-playing` | the current `nowplaying` **data** object, for the legacy SMTC-Bridge widget that polls this endpoint |
 | `GET` | `/artwork/<app_id>?v=<n>` | cached cover art bytes |
 | `GET` | `/` | the browser-based settings page |
@@ -34,13 +35,13 @@ The plugin also answers a small HTTP surface (outside the upgrade):
 `GET /health` returns:
 
 ```json
-{ "ok": true, "bridge": "geseki-bridge/0.7.1", "protocol": 1 }
+{ "ok": true, "bridge": "geseki-bridge/0.8.0", "protocol": 1 }
 ```
 
 `GET /bridge-port` returns:
 
 ```json
-{ "ok": true, "bridge": "geseki-bridge/0.7.1", "protocol": 1, "wsPort": 47800, "discoveryPort": 47800 }
+{ "ok": true, "bridge": "geseki-bridge/0.8.0", "protocol": 1, "wsPort": 47800, "discoveryPort": 47800 }
 ```
 
 ### Port discovery
@@ -58,6 +59,18 @@ Both responses are `Access-Control-Allow-Origin: *` and carry
 `Access-Control-Allow-Private-Network: true`, because a widget is served over
 `https` and fetches `http://127.0.0.1` (a public→private request Chromium
 otherwise blocks).
+
+`GET /obs-port` answers the port `obs-websocket` itself listens on, read from
+its own config file (so a widget can point its OBS sync at the right port
+without the user typing it):
+
+```json
+{ "ok": true, "port": 4455, "enabled": true, "authRequired": true }
+```
+
+`enabled` mirrors obs-websocket's `server_enabled`; `authRequired` mirrors its
+`auth_required`, so a widget knows whether a password is needed. The password
+value itself is **never** returned: any page can reach this endpoint.
 
 `GET /now-playing` returns the same object as the `nowplaying` message's
 `data` field (below), so an existing SMTC-Bridge widget keeps working once it
@@ -78,7 +91,7 @@ Sent once, immediately after the socket opens.
 {
   "type": "hello",
   "protocol": 1,
-  "bridge": "geseki-bridge/0.7.1",
+  "bridge": "geseki-bridge/0.8.0",
   "capabilities": ["tiktok", "nowplaying"]
 }
 ```
@@ -118,7 +131,9 @@ or `quit` cancels a pending retry or wait.
 
 ### 2.3 `tiktok`
 
-A TikTok LIVE event, normalised to the shape the widgets already understand.
+A TikTok LIVE event, normalised to the shape **TikTok Live Connector v2.5.0**
+exposes (the version npm installs), so a consumer written against TLC finds the
+same keys.
 
 ```json
 { "type": "tiktok", "event": "chat", "data": { ... } }
@@ -129,21 +144,32 @@ A TikTok LIVE event, normalised to the shape the widgets already understand.
 | `event`   | Meaning                        | Extra keys on `data` |
 | --------- | ------------------------------ | -------------------- |
 | `chat`    | a viewer posted a comment, **or a subscriber sent an emote (sticker)** | `comment`, `emotes` |
-| `gift`    | a gift was sent                | `giftName`, `giftPictureUrl`, `repeatCount`, `repeatEnd`, `giftType` |
-| `follow`  | a viewer followed              | - |
-| `share`   | a viewer shared the stream     | - |
+| `gift`    | a gift was sent                | `giftId`, `giftName`, `giftPictureUrl`, `repeatCount`, `repeatEnd`, `giftType`, `diamondCount`, `describe`, `groupId`, `gift` |
+| `social`  | a social message (follow or share) | `displayType`, `label` |
+| `follow`  | a viewer followed (also emitted as `social`) | `displayType`, `label` |
+| `share`   | a viewer shared the stream (also emitted as `social`) | `displayType`, `label` |
 | `subscribe` | a viewer subscribed (new sub or renewal) | - |
+| `member`  | a viewer entered the room     | `actionId` |
+| `emote`   | a subscriber sent an emote (sticker) | `emoteId`, `emoteImageUrl` |
 | `superFan` | a viewer became a Super Fan | - |
 | `superFanJoin` | an existing Super Fan entered the room | - |
 | `superFanBox` | a viewer sent a Super Fan Box | `diamondCount` |
-| `like`    | likes were sent                | `likeCount`, `totalLikes` |
-| `roomUser`| viewer count changed           | `viewerCount` |
-| `join`    | a viewer entered the room      | - |
+| `like`    | likes were sent                | `likeCount`, `totalLikes`, `totalLikeCount` |
+| `roomUser`| viewer count changed           | `viewerCount`, `topViewers` |
+
+`follow` and `share` are also delivered as `social` with a `displayType`, the
+way TikTok Live Connector derives them from one message; a consumer may listen
+for either name. A room entry is `member` (TLC's name); the old `join` name is
+gone.
 
 `subscribe` is produced from two TikTok messages: `WebcastSubNotifyMessage` (a
 subscription notice) and `WebcastMemberMessage` with action `SUBSCRIBED`. The
 event is emitted with the common user fields and no extra keys, matching what
 the widgets already render for their subscribe alert.
+
+A subscriber emote is delivered **twice**: as a synthetic `chat` frame (see
+§2.3.1, what the widgets render) and as a standalone `emote` event carrying
+`emoteId` / `emoteImageUrl` (TLC's shape).
 
 **Super Fan** is a separate event family, named after TikTok Live Connector's
 `superFan` / `superFanJoin` / `superFanBox`. It is **not** a subscribe: a Super
@@ -163,22 +189,52 @@ Fan is a paid tier, and TikTok signals it on its own messages.
 The old `subscribe` event is unchanged and still emitted, Super Fan does not
 replace it. A barrage that carries no Super Fan marker is dropped, not forwarded.
 
-**Common `data` fields** (present when the source event carries a user):
+**Common `data` fields** (present when the source event carries a user), matching
+TikTok Live Connector v2.5.0:
 
 | Key | Type | Notes |
 | --- | --- | --- |
 | `userId` | string | stable id, used for de-duplication |
+| `secUid` | string | stable user handle (TLC `secUid`) |
 | `uniqueId` | string | `@handle` without the `@` |
 | `nickname` | string | display name |
-| `profilePictureUrl` | string | avatar URL |
+| `profilePictureUrl` | string | best avatar URL |
+| `followRole` | int | `0` none, `1` follower, `2` friend |
 | `userBadges` | array | see below |
+| `userSceneTypes` | array | badge scene type per badge |
+| `userDetails` | object | `createTime` (string), `bioDescription`, `profilePictureUrls` |
+| `followInfo` | object | `followingCount`, `followerCount`, `followStatus`, `pushStatus` (present when TikTok sends it) |
+| `isModerator` | bool | derived from the badge list |
+| `isSubscriber` | bool | derived from the badge list |
+| `isNewGifter` | bool | derived from the badge list |
+| `topGifterRank` | int/null | `null` when the badge carries no rank number |
+| `gifterLevel` | int | user's spend grade (TLC `gifterLevel`) |
+| `teamMemberLevel` | int | fan-club level (TLC `teamMemberLevel`) |
+| `fansClubInfo` | object | bridge extra: `clubName`, `fansLevel`, `isActive` |
+| `fanClubBadge` | string | bridge extra: fan-club badge artwork |
+| `fanClubActive` | bool | bridge extra: `false` for a dormant ("grey") member |
 
-`userBadges` entries are already flattened for the widget, which reads
-`image` / `name` / `color`:
+Every `tiktok` event also carries the per-message fields TikTok Live Connector
+attaches: `msgId` and `createTime`, both **strings** (protobuf Long values are
+stringified so JS consumers never lose precision).
+
+`userBadges` entries carry the keys both the widgets and TLC read, so the same
+entry serves either consumer:
 
 ```json
-{ "image": "https://…png", "name": "Top Gifter", "color": "#ffcc00" }
+{
+  "badgeSceneType": 8,
+  "image": "https://…png",
+  "url": "https://…png",
+  "name": "No. 3",
+  "color": "#ffcc00",
+  "type": "BADGEDISPLAYTYPE_IMAGE",
+  "displayType": 1
+}
 ```
+
+`image` and `url` hold the same artwork (`url` is TLC's key, `image` the
+widgets'); `badgeSceneType` mirrors TLC's `badgeSceneType`.
 
 ### 2.3.1 `emotes`
 
@@ -212,7 +268,9 @@ emotes that sit inside a comment. The bridge therefore re-shapes it into a
 synthetic `chat` frame: `comment` is one placeholder character per emote
 (U+200B, zero-width) and each emote's `placeInComment` is its 0-based position.
 That way an existing `chat` renderer draws the artwork with no widget-side
-change. There is no separate `emote` event.
+change. The same message is **also** emitted as a standalone `emote` event
+(`emoteId` / `emoteImageUrl`), TikTok Live Connector's shape, for consumers that
+listen for it.
 
 TikTok sometimes delivers a subscriber emote through the **chat** path itself
 with an **empty `comment`** while its emotes still carry indexes 0,1,2,… A
@@ -230,7 +288,7 @@ REST payload used, so existing widget code keeps working.
 {
   "type": "nowplaying",
   "data": {
-    "app_version": "0.7.1",
+    "app_version": "0.8.0",
     "current_session_id": "Spotify.exe",
     "sessions": [
       {

@@ -23,7 +23,7 @@ import (
 	gotiktoklive "github.com/steampoweredtaco/gotiktoklive"
 )
 
-const version = "0.7.1"
+const version = "0.8.0"
 
 // ---------------------------------------------------------------- stdio I/O
 
@@ -519,8 +519,10 @@ func waitForLivePoll(ctx context.Context) bool {
 
 // ------------------------------------------------------------------- events
 
-// userMap flattens gotiktoklive.User into the shape the widgets already read
-// from TikFinity/IndoFinity, so no widget-side mapping is needed.
+// userMap flattens gotiktoklive.User into the shape TikTok Live Connector
+// (v2.5.0) exposes, so a consumer written against TLC finds the same keys.
+// The bridge-specific extras (fansClubInfo, fanClubBadge, fanClubActive) stay:
+// the widgets' fan-club filter reads them and TLC has no equivalent.
 //
 // userBadges mirrors TikFinity's entry: {badgeSceneType, image, name, color}.
 // The vendored gotiktoklive is patched to expose the image URL and background
@@ -534,23 +536,79 @@ func userMap(u *gotiktoklive.User) map[string]interface{} {
 		avatar = u.ProfilePicture.Urls[len(u.ProfilePicture.Urls)-1]
 	}
 	badges := []interface{}{}
+	sceneTypes := []interface{}{}
 	if u.Badge != nil {
 		for _, b := range u.Badge.Badges {
 			badges = append(badges, map[string]interface{}{
 				"badgeSceneType": b.SceneType,
 				"image":          b.Image,
+				"url":            b.Image,
 				"name":           b.Name,
 				"color":          b.Color,
+				"type":           b.Type,
+				"displayType":    b.DisplayType,
 			})
+			sceneTypes = append(sceneTypes, b.SceneType)
 		}
 	}
 	out := map[string]interface{}{
 		"userId":            strconv.FormatInt(u.ID, 10),
+		"secUid":            u.SecUid,
 		"uniqueId":          u.Username,
 		"nickname":          u.Nickname,
 		"profilePictureUrl": avatar,
 		"userBadges":        badges,
+		"userSceneTypes":    sceneTypes,
 	}
+	// userDetails: TLC nests the profile fields here. createTime and
+	// profilePictureUrls are stringified the same way TLC does.
+	details := map[string]interface{}{
+		"createTime":     strconv.FormatInt(u.CreateTime, 10),
+		"bioDescription": u.BioDescription,
+	}
+	if len(u.ProfilePictureUrls) > 0 {
+		details["profilePictureUrls"] = u.ProfilePictureUrls
+	} else {
+		details["profilePictureUrls"] = []string{}
+	}
+	out["userDetails"] = details
+	// followInfo: follower/following counters, forwarded as TLC does.
+	if u.FollowInfo != nil {
+		out["followInfo"] = map[string]interface{}{
+			"followingCount": u.FollowInfo.FollowingCount,
+			"followerCount":  u.FollowInfo.FollowerCount,
+			"followStatus":   u.FollowInfo.FollowStatus,
+			"pushStatus":     u.FollowInfo.PushStatus,
+		}
+	}
+	// Derived flags TLC computes from the badge list. Kept in step with the
+	// scene types the vendored badge patch fills (see badgeSceneFromURL).
+	isModerator := false
+	isSubscriber := false
+	isNewGifter := false
+	if u.Badge != nil {
+		for _, b := range u.Badge.Badges {
+			switch b.SceneType {
+			case 1:
+				isModerator = true
+			case 4, 7:
+				isSubscriber = true
+			case 2:
+				isNewGifter = true
+			}
+			if strings.EqualFold(strings.TrimSpace(b.Name), "New gifter") {
+				isNewGifter = true
+			}
+		}
+	}
+	out["isModerator"] = isModerator
+	out["isSubscriber"] = isSubscriber
+	out["isNewGifter"] = isNewGifter
+	// topGifterRank: TLC parses it from the badge URL; the vendored badge
+	// carries no rank number, so it stays null like TLC's fallback.
+	out["topGifterRank"] = nil
+	out["gifterLevel"] = u.GifterLevel
+	out["teamMemberLevel"] = u.FansClubLevel
 	// Follow role (0 none, 1 follower, 2 friend). The widget's filter reads
 	// followRole >= 1 for the "follower" permission, so forward it too.
 	if u.ExtraAttributes != nil {
@@ -590,13 +648,26 @@ func withUser(u *gotiktoklive.User, extra map[string]interface{}) map[string]int
 // carries follower/subscriber/moderator per-EVENT (not on User), and upstream
 // dropped them entirely, so a widget could not filter by role. The widget's
 // "User Permissions" filter reads isFollower / isSubscriber / isModerator.
+//
+// A flag already true (derived from the badge list in userMap, the way TikTok
+// Live Connector computes it) is never downgraded to false here: the identity
+// block only escalates, so a moderator badge stays a moderator.
 func withIdentity(m map[string]interface{}, id *gotiktoklive.UserIdentity) map[string]interface{} {
 	if id == nil {
 		return m
 	}
-	m["isFollower"] = id.IsFollower
-	m["isSubscriber"] = id.IsSubscriber
-	m["isModerator"] = id.IsModerator
+	setBool := func(key string, v bool) {
+		if v {
+			m[key] = true
+			return
+		}
+		if _, ok := m[key]; !ok {
+			m[key] = false
+		}
+	}
+	setBool("isFollower", id.IsFollower)
+	setBool("isSubscriber", id.IsSubscriber)
+	setBool("isModerator", id.IsModerator)
 	return m
 }
 
@@ -674,6 +745,40 @@ func forwardable(ev gotiktoklive.Event) bool {
 	return !ev.IsHistory()
 }
 
+// withEventMeta adds the per-message fields TikTok Live Connector attaches to
+// every event: msgId and createTime, both stringified (TLC converts protobuf
+// Long values to strings so JS consumers never lose precision).
+func withEventMeta(m map[string]interface{}, msgID int64, createTime int64) map[string]interface{} {
+	m["msgId"] = strconv.FormatInt(msgID, 10)
+	m["createTime"] = strconv.FormatInt(createTime, 10)
+	return m
+}
+
+// boolToInt renders a bool as TLC's 0/1 (its `gift.repeat_end` field).
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// topViewerList shapes the roomUser rank list like TikTok Live Connector's
+// topViewers: [{user: {...}, coinCount: N}]. Always a (possibly empty) slice so
+// the JSON carries [] rather than null.
+func topViewerList(list []gotiktoklive.TopViewer) []interface{} {
+	out := []interface{}{}
+	for _, v := range list {
+		if v.User == nil {
+			continue
+		}
+		out = append(out, map[string]interface{}{
+			"user":      userMap(v.User),
+			"coinCount": v.CoinCount,
+		})
+	}
+	return out
+}
+
 func handleEvent(ev gotiktoklive.Event) {
 	if !forwardable(ev) {
 		return
@@ -681,10 +786,10 @@ func handleEvent(ev gotiktoklive.Event) {
 	switch e := ev.(type) {
 
 	case gotiktoklive.ChatEvent:
-		emit(outMsg{Ev: "tiktok", Event: "chat", Data: withIdentity(withUser(e.User, map[string]interface{}{
+		emit(outMsg{Ev: "tiktok", Event: "chat", Data: withEventMeta(withIdentity(withUser(e.User, map[string]interface{}{
 			"comment": normalizeComment(e.Comment, e.Emotes),
 			"emotes":  emoteList(e.Emotes),
-		}), e.UserIdentity)})
+		}), e.UserIdentity), e.MessageID, e.Timestamp)})
 
 	case gotiktoklive.EmoteEvent:
 		// A subscriber emote (sticker). TikTok sends it as its own message with
@@ -694,16 +799,34 @@ func handleEvent(ev gotiktoklive.Event) {
 		// placeInComment, exactly like a real comment that carries emotes. That
 		// way the emote renders with no widget-side change.
 		comment, emotes := standaloneEmoteAsChat(e.Emotes)
-		emit(outMsg{Ev: "tiktok", Event: "chat", Data: withIdentity(withUser(e.User, map[string]interface{}{
+		emit(outMsg{Ev: "tiktok", Event: "chat", Data: withEventMeta(withIdentity(withUser(e.User, map[string]interface{}{
 			"comment": comment,
 			"emotes":  emotes,
-		}), e.UserIdentity)})
+		}), e.UserIdentity), e.MessageID, e.Timestamp)})
+		// TikTok Live Connector delivers a subscriber emote as its own `emote`
+		// event ({user..., emoteId, emoteImageUrl}); emit the same frame so a
+		// TLC-written consumer sees it. The synthetic `chat` above stays for
+		// the widgets, which only render emotes inside a comment.
+		base := withIdentity(userMap(e.User), e.UserIdentity)
+		for _, em := range e.Emotes {
+			d := map[string]interface{}{}
+			for k, v := range base {
+				d[k] = v
+			}
+			d["emoteId"] = em.EmoteID
+			d["emoteImageUrl"] = em.ImageURL
+			emit(outMsg{Ev: "tiktok", Event: "emote", Data: withEventMeta(d, e.MessageID, e.Timestamp)})
+		}
 
 	case gotiktoklive.GiftEvent:
 		// Streakable gifts (Type == 1) arrive many times; the widget already
 		// filters on repeatEnd, and it needs repeatCount to show the total, so
 		// every frame is forwarded rather than collapsing them here.
-		emit(outMsg{Ev: "tiktok", Event: "gift", Data: withIdentity(withUser(e.User, map[string]interface{}{
+		//
+		// The `gift` sub-object mirrors TikTok Live Connector's compatibility
+		// block ({gift_id, repeat_count, repeat_end, gift_type}); the flat
+		// fields stay so existing consumers keep working.
+		emit(outMsg{Ev: "tiktok", Event: "gift", Data: withEventMeta(withIdentity(withUser(e.User, map[string]interface{}{
 			"giftId":         e.ID,
 			"giftName":       e.Name,
 			"giftPictureUrl": e.PictureURL,
@@ -711,23 +834,51 @@ func handleEvent(ev gotiktoklive.Event) {
 			"repeatEnd":      e.RepeatEnd,
 			"giftType":       e.Type,
 			"giftCost":       e.Diamonds,
-		}), e.UserIdentity)})
+			"describe":       e.Describe,
+			"diamondCount":   e.Diamonds,
+			"timestamp":      e.Timestamp,
+			"receiverUserId": strconv.FormatInt(e.ToUserID, 10),
+			"groupId":        strconv.FormatInt(e.GroupID, 10),
+			"gift": map[string]interface{}{
+				"gift_id":      e.ID,
+				"repeat_count": e.RepeatCount,
+				"repeat_end":   boolToInt(e.RepeatEnd),
+				"gift_type":    e.Type,
+			},
+		}), e.UserIdentity), e.MessageID, e.Timestamp)})
 
 	case gotiktoklive.UserEvent:
 		// The event kind is an unexported type, so compare against the exported
 		// constants rather than a string.
+		//
+		// Event names follow TikTok Live Connector: a join is `member`, a
+		// social message is `social` (TLC also derives `follow`/`share` from
+		// it), and a subscription keeps `subscribe`. The widgets still listen
+		// for `follow`/`share`, so both frames are emitted, exactly as TLC
+		// does; a consumer that only knows `social` sees the same event once.
+		data := userMap(e.User)
+		if e.ActionID != 0 {
+			data["actionId"] = e.ActionID
+		}
+		if e.DisplayType != "" {
+			data["displayType"] = e.DisplayType
+			data["label"] = e.Label
+		}
+		data = withEventMeta(data, e.MessageID, e.Timestamp)
 		switch e.Event {
 		case gotiktoklive.USER_FOLLOW:
-			emit(outMsg{Ev: "tiktok", Event: "follow", Data: userMap(e.User)})
+			emit(outMsg{Ev: "tiktok", Event: "social", Data: data})
+			emit(outMsg{Ev: "tiktok", Event: "follow", Data: data})
 		case gotiktoklive.USER_SHARE:
-			emit(outMsg{Ev: "tiktok", Event: "share", Data: userMap(e.User)})
+			emit(outMsg{Ev: "tiktok", Event: "social", Data: data})
+			emit(outMsg{Ev: "tiktok", Event: "share", Data: data})
 		case gotiktoklive.USER_JOIN:
-			emit(outMsg{Ev: "tiktok", Event: "join", Data: userMap(e.User)})
+			emit(outMsg{Ev: "tiktok", Event: "member", Data: data})
 		case gotiktoklive.USER_SUBSCRIBE:
 			// Subscriptions were documented in protocol.md §2.3 but never
 			// emitted: the vendored parser had no case for
 			// WebcastSubNotifyMessage, so the event was dropped.
-			emit(outMsg{Ev: "tiktok", Event: "subscribe", Data: userMap(e.User)})
+			emit(outMsg{Ev: "tiktok", Event: "subscribe", Data: data})
 		}
 
 	case gotiktoklive.SuperFanEvent:
@@ -738,26 +889,30 @@ func handleEvent(ev gotiktoklive.Event) {
 		if e.Event == gotiktoklive.SUPER_FAN_BOX {
 			extra["diamondCount"] = e.DiamondCount
 		}
-		emit(outMsg{Ev: "tiktok", Event: string(e.Event), Data: withUser(e.User, extra)})
+		emit(outMsg{Ev: "tiktok", Event: string(e.Event), Data: withEventMeta(withUser(e.User, extra), e.MessageID, e.Timestamp)})
 
 	case gotiktoklive.ViewersEvent:
-		emit(outMsg{Ev: "tiktok", Event: "roomUser", Data: map[string]interface{}{
+		data := map[string]interface{}{
 			"viewerCount": e.Viewers,
-		}})
+			"topViewers":  topViewerList(e.TopViewers),
+		}
+		emit(outMsg{Ev: "tiktok", Event: "roomUser", Data: withEventMeta(data, e.MessageID, e.Timestamp)})
 
 	case gotiktoklive.LikeEvent:
-		emit(outMsg{Ev: "tiktok", Event: "like", Data: withUser(e.User, map[string]interface{}{
-			"likeCount":  e.Likes,
-			"totalLikes": e.TotalLikes,
-		})})
+		// totalLikeCount is TLC's name; totalLikes stays for existing widgets.
+		emit(outMsg{Ev: "tiktok", Event: "like", Data: withEventMeta(withUser(e.User, map[string]interface{}{
+			"likeCount":      e.Likes,
+			"totalLikes":     e.TotalLikes,
+			"totalLikeCount": e.TotalLikes,
+		}), e.MessageID, e.Timestamp)})
 
 	case gotiktoklive.RoomEvent:
 		// Room events are TikTok system notices (moderation, room state). They
 		// are forwarded as a distinct event so widgets can opt in later.
-		emit(outMsg{Ev: "tiktok", Event: "roomEvent", Data: map[string]interface{}{
+		emit(outMsg{Ev: "tiktok", Event: "roomEvent", Data: withEventMeta(map[string]interface{}{
 			"roomEventType": e.Type,
 			"message":       e.Message,
-		}})
+		}, e.MessageID, e.Timestamp)})
 	}
 }
 

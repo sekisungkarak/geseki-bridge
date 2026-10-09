@@ -141,6 +141,7 @@ func parseMsg(msg *pb.WebcastResponse_Message, warnHandler func(...interface{}),
 			Timestamp: pt.Common.CreateTime,
 			Event:     toUserType(pt.Action.String()),
 			User:      toUser(pt.User),
+			ActionID:  int(pt.GetAction()),
 			isHistory: msg.IsHistory || cachedHistory(pt.Common.MsgId),
 		}, nil
 	case *pb.WebcastSubNotifyMessage:
@@ -229,19 +230,28 @@ func parseMsg(msg *pb.WebcastResponse_Message, warnHandler func(...interface{}),
 		}, nil
 	case *pb.WebcastRoomUserSeqMessage:
 		return ViewersEvent{
-			MessageID: pt.Common.MsgId,
-			Timestamp: pt.Common.CreateTime,
-			Viewers:   int(pt.Total),
-			isHistory: msg.IsHistory || cachedHistory(pt.Common.MsgId),
+			MessageID:  pt.Common.MsgId,
+			Timestamp:  pt.Common.CreateTime,
+			Viewers:    int(pt.Total),
+			TopViewers: toTopViewers(pt.RanksList),
+			isHistory:  msg.IsHistory || cachedHistory(pt.Common.MsgId),
 		}, nil
 	case *pb.WebcastSocialMessage:
-		return UserEvent{
+		ev := UserEvent{
 			MessageID: pt.Common.MsgId,
 			Timestamp: pt.Common.CreateTime,
 			Event:     toUserType(pt.Common.DisplayText.Key),
 			User:      toUser(pt.User),
 			isHistory: msg.IsHistory || cachedHistory(pt.Common.MsgId),
-		}, nil
+		}
+		// TikTok Live Connector exposes the social message's display text as
+		// displayType/label (its WebcastMessageEventDetails). The vendored
+		// proto keeps them on Common.displayText.
+		if dt := pt.Common.GetDisplayText(); dt != nil {
+			ev.DisplayType = dt.GetKey()
+			ev.Label = dt.GetDefaultPattern()
+		}
+		return ev, nil
 	case *pb.WebcastGiftMessage:
 		if pt.GiftId == 0 && pt.User == nil {
 			return nil, nil
@@ -609,6 +619,33 @@ func toUser(u *pb.User) *User {
 		FollowRole: int(u.UserRole),
 	}
 
+	// PATCH (upstream gap): identity/profile fields TikTok Live Connector
+	// exposes. Forwarded so the payload matches TLC instead of carrying only
+	// the name and avatar.
+	user.SecUid = u.GetSecUid()
+	user.CreateTime = u.GetCreateTime()
+	user.BioDescription = u.GetBioDescription()
+	if u.GetAvatarThumb() != nil {
+		user.ProfilePictureUrls = u.GetAvatarThumb().GetUrlList()
+	} else if u.GetAvatarMedium() != nil {
+		user.ProfilePictureUrls = u.GetAvatarMedium().GetUrlList()
+	} else if u.GetAvatarLarge() != nil {
+		user.ProfilePictureUrls = u.GetAvatarLarge().GetUrlList()
+	}
+	if fi := u.GetFollowInfo(); fi != nil {
+		user.FollowInfo = &FollowInfo{
+			FollowingCount: fi.GetFollowingCount(),
+			FollowerCount:  fi.GetFollowerCount(),
+			FollowStatus:   fi.GetFollowStatus(),
+			PushStatus:     fi.GetPushStatus(),
+		}
+	}
+	// TLC's gifterLevel: the user's spend grade (PayGrade). The badge artwork
+	// for it is scene 8; the level itself lives on PayGrade.
+	if pg := u.GetPayGrade(); pg != nil {
+		user.GifterLevel = pg.GetLevel()
+	}
+
 	// PATCH (upstream gap): surface fan-club membership so the sidecar can
 	// forward it. Prefer FansClub.data (carries club name AND level); fall back
 	// to FansClubInfo.fansLevel, which TikTok still sends when clubName is empty.
@@ -658,6 +695,7 @@ func toUser(u *pb.User) *User {
 		var badges []*UserBadge
 		for _, badge := range u.BadgeList {
 			b := &UserBadge{Type: badge.GetDisplayType().String()}
+			b.DisplayType = int(badge.GetDisplayType())
 			switch t := badge.GetBadgeType().(type) {
 			case *pb.BadgeStruct_Combine:
 				c := t.Combine
@@ -699,6 +737,25 @@ func toUser(u *pb.User) *User {
 		}
 	}
 	return &user
+}
+
+// toTopViewers flattens the roomUser rank list into TLC's topViewers shape:
+// [{user: {...}, coinCount: N}].
+func toTopViewers(list []*pb.WebcastRoomUserSeqMessage_Contributor) []TopViewer {
+	if len(list) == 0 {
+		return nil
+	}
+	out := make([]TopViewer, 0, len(list))
+	for _, c := range list {
+		if c == nil || c.GetUser() == nil {
+			continue
+		}
+		out = append(out, TopViewer{
+			User:      toUser(c.GetUser()),
+			CoinCount: int64(c.GetScore()),
+		})
+	}
+	return out
 }
 
 // toEmotes flattens the comment's inline emotes. TikTok puts a placeholder

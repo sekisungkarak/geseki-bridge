@@ -26,7 +26,7 @@ The sidecar connects to a live room through this server, end to end:
 {"ev":"state","state":"connected"}
 {"ev":"tiktok","event":"roomUser","data":{"viewerCount":278}}
 {"ev":"tiktok","event":"chat","data":{"comment":"...","nickname":"..."}}
-{"ev":"tiktok","event":"join","data":{"nickname":"...","userBadges":[...]}}
+{"ev":"tiktok","event":"member","data":{"nickname":"...","userBadges":[...]}}
 ```
 
 Chat, joins, viewer counts and badges all flow, signed entirely on this

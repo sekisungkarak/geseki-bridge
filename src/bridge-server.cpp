@@ -5,6 +5,7 @@
  *   - WebSocket  (RFC 6455) at GET /ws,   the widget protocol (docs/protocol.md)
  *   - HTTP       GET /health,             liveness probe
  *   - HTTP       GET /bridge-port,        port discovery (also on fixed port 47800)
+ *   - HTTP       GET /obs-port,           obs-websocket port (read from its config)
  *   - HTTP       POST /save?name=<file>,  write the body to the Downloads folder
  *   - HTTP       GET /now-playing,        legacy SMTC-Bridge compatible payload
  *   - HTTP       GET /artwork/<app_id>,   cached cover art (?v=<version>)
@@ -605,6 +606,78 @@ std::string BuildPortInfo()
 	       "\",\"protocol\":" + std::to_string(GESEKI_BRIDGE_PROTOCOL) +
 	       ",\"wsPort\":" + std::to_string(g_port.load()) +
 	       ",\"discoveryPort\":" + std::to_string(kDiscoveryPort) + "}";
+}
+
+// Path of the obs-websocket plugin's own config file. OBS keeps it beside this
+// plugin's config dir: <...>\plugin_config\obs-websocket\config.json. Reading it
+// is how a widget finds the OBS WebSocket port without the user typing it.
+std::string ObsWebSocketConfigPath()
+{
+	const std::string file = ConfigFilePath(); // ...\plugin_config\geseki-bridge\config.json
+	if (file.empty())
+		return std::string();
+	const size_t slash = file.find_last_of("\\/");
+	if (slash == std::string::npos || slash == 0)
+		return std::string();
+	const size_t parent = file.find_last_of("\\/", slash - 1); // ...\plugin_config
+	if (parent == std::string::npos)
+		return std::string();
+	return file.substr(0, parent) + "\\obs-websocket\\config.json";
+}
+
+// Reads a small text file whole. False when it is missing or larger than the
+// cap (the obs-websocket config is a few hundred bytes).
+bool ReadTextFile(const std::string &path, std::string &out)
+{
+	if (path.empty())
+		return false;
+	HANDLE h = CreateFileW(Utf8ToWide(path).c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+		OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+	if (h == INVALID_HANDLE_VALUE)
+		return false;
+	LARGE_INTEGER size{};
+	if (!GetFileSizeEx(h, &size) || size.QuadPart < 0 || size.QuadPart > (4LL << 20)) {
+		CloseHandle(h);
+		return false;
+	}
+	out.resize(static_cast<size_t>(size.QuadPart));
+	DWORD got = 0;
+	BOOL ok = TRUE;
+	if (!out.empty())
+		ok = ReadFile(h, &out[0], static_cast<DWORD>(out.size()), &got, nullptr);
+	CloseHandle(h);
+	if (!ok)
+		return false;
+	out.resize(got);
+	return true;
+}
+
+// Discovery answer for the OBS side: which port obs-websocket listens on, read
+// from its config file. The password is deliberately NOT included: any page can
+// reach this endpoint, and the secret must stay with the user.
+std::string BuildObsPortInfo()
+{
+	const std::string path = ObsWebSocketConfigPath();
+	std::string raw;
+	geseki::json::Value doc;
+	if (!ReadTextFile(path, raw) || !geseki::json::Value::Parse(raw, doc) || !doc.is_object())
+		return "{\"ok\":false}";
+
+	const auto *port = doc.find("server_port");
+	const int64_t n = port ? port->as_int(0) : 0;
+	if (n <= 0 || n > 65535)
+		return "{\"ok\":false}";
+
+	const auto *enabled = doc.find("server_enabled");
+	const bool on = enabled && enabled->as_bool(false);
+	// Whether the server asks for a password. The password itself is NEVER
+	// exposed: any page can reach this endpoint, so a widget only learns that
+	// one is required, not what it is.
+	const auto *auth = doc.find("auth_required");
+	const bool needsAuth = auth && auth->as_bool(false);
+	return std::string("{\"ok\":true,\"port\":") + std::to_string(n) +
+	       ",\"enabled\":" + (on ? "true" : "false") +
+	       ",\"authRequired\":" + (needsAuth ? "true" : "false") + "}";
 }
 
 std::string BuildStatus()
@@ -2012,6 +2085,8 @@ void HandleConnection(Socket s, std::shared_ptr<std::atomic<bool>> done)
 								 geseki::json::Escape(full) + "\"}");
 					}
 				}
+			} else if (path == "/obs-port") {
+				SendHttp(s, 200, "application/json", BuildObsPortInfo());
 			} else if (path == "/bridge-port") {
 				SendHttp(s, 200, "application/json", BuildPortInfo());
 			} else if (path == "/sessions" || path == "/") {

@@ -93,7 +93,14 @@ type UserEvent struct {
 	MessageID int64
 	Event     userEventType
 	User      *User
-	isHistory bool
+	// ActionID is the WebcastMemberMessage action (1 = join). TikTok Live
+	// Connector exposes it as `actionId` on the `member` event.
+	ActionID int
+	// DisplayType and Label come from the social message's display text;
+	// TikTok Live Connector exposes them on the `social` event.
+	DisplayType string
+	Label       string
+	isHistory   bool
 }
 
 func (u UserEvent) CreatedTimestamp() int64 {
@@ -143,10 +150,11 @@ func (s SuperFanEvent) CreatedTimestamp() int64 {
 }
 
 type ViewersEvent struct {
-	Timestamp int64
-	MessageID int64
-	Viewers   int
-	isHistory bool
+	Timestamp  int64
+	MessageID  int64
+	Viewers    int
+	TopViewers []TopViewer
+	isHistory  bool
 }
 
 func (v ViewersEvent) TimeComparableID() int64 {
@@ -348,6 +356,19 @@ type User struct {
 	// dormant member as a non-member, so the sidecar forwards which of the
 	// two states the badge is in.
 	FanClubActive bool
+	// PATCH (upstream gap): identity/profile fields TikTok Live Connector
+	// forwards and the widgets read. Upstream exposed none of them, so the
+	// payload was "too small" next to TLC. SecUid is the stable user handle,
+	// CreateTime is the account creation time, BioDescription the profile
+	// bio, ProfilePictureUrls the full avatar list (the payload only carried
+	// the single best URL), FollowInfo the follower/following counters and
+	// GifterLevel the user's spend grade (TLC's gifterLevel).
+	SecUid             string
+	CreateTime         int64
+	BioDescription     string
+	ProfilePictureUrls []string
+	FollowInfo         *FollowInfo
+	GifterLevel        int64
 }
 
 type UserIdentity struct {
@@ -367,6 +388,21 @@ type ExtraAttributes struct {
 	FollowRole int
 }
 
+// FollowInfo mirrors TikTok Live Connector's userDetails/followInfo block:
+// {followingCount, followerCount, followStatus, pushStatus}.
+type FollowInfo struct {
+	FollowingCount int64
+	FollowerCount  int64
+	FollowStatus   int64
+	PushStatus     int64
+}
+
+// TopViewer is one entry of the roomUser top-gifter list (TLC's topViewers).
+type TopViewer struct {
+	User      *User
+	CoinCount int64
+}
+
 type BadgeAttributes struct {
 	Badges []*UserBadge
 }
@@ -381,6 +417,10 @@ type UserBadge struct {
 	Image     string
 	Color     string
 	SceneType int
+	// DisplayType is TikTok's BadgeDisplayType enum (1 = image, 4 = combine,
+	// ...). TikTok Live Connector forwards it as `displayType`, so the badge
+	// entry carries the same key.
+	DisplayType int
 }
 
 type roomInfoRsp struct {
