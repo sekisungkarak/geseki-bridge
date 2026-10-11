@@ -12,12 +12,17 @@ struct Config {
 	std::string tiktok_username;
 	std::string tiktok_api_key;
 	bool tiktok_autoconnect = false;
+	// When true (the default) the sidecar connects through the signature-free
+	// direct WebSocket, which needs no sign server and no third-party quota.
+	// Turning it off skips that path and lets the sidecar use the /connect
+	// endpoint and then the optional signer, so a user can force the older
+	// route if the direct one ever misbehaves. Editable in the settings dialog.
+	bool tiktok_direct = true;
 	// Retained for config compatibility. The plugin no longer starts a local
 	// sign server: room data comes from a signature-free endpoint, and the
-	// optional tiktok_api_key is the only fallback. Both fields are still
-	// read and written so existing config files keep working unchanged.
+	// optional tiktok_api_key is the only fallback. The field is still read
+	// and written so existing config files keep working unchanged.
 	bool alt_connection = false;
-	int sign_server_port = 8090;
 };
 
 // Starts the server and the TikTok sidecar. Idempotent.

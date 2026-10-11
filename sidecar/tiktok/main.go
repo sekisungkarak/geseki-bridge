@@ -23,7 +23,7 @@ import (
 	gotiktoklive "github.com/steampoweredtaco/gotiktoklive"
 )
 
-const version = "0.8.0"
+const version = "1.0.0"
 
 // ---------------------------------------------------------------- stdio I/O
 
@@ -103,6 +103,9 @@ type connectCmd struct {
 	// APIKey is optional and belongs to the alternative connection mode,
 	// where it raises the signing rate limit. It is unused locally.
 	APIKey string `json:"apiKey"`
+	// DirectMode forces the signature-free direct WebSocket path on or off.
+	// It is a pointer so an absent field means "use the default" (on).
+	DirectMode *bool `json:"directMode,omitempty"`
 }
 
 func handleConnect(c connectCmd) {
@@ -113,11 +116,20 @@ func handleConnect(c connectCmd) {
 		emitState("error", "missing username")
 		return
 	}
-	// The signature-free /connect endpoint is the primary path: it needs no
-	// sign server, so TikTok works with nothing installed. A remote signer is
-	// kept only as a fallback for when that endpoint is unavailable, selected
-	// by the optional API key.
+	// Jalur direct (tanpa tanda tangan) adalah jalur utama: tanpa sign server
+	// dan tanpa kuota pihak ketiga, sehingga TikTok bekerja apa adanya. Bila
+	// handshake-nya gagal, library otomatis jatuh ke /connect lalu ke signer,
+	// jadi tidak ada risiko kehilangan koneksi. Field directMode boleh dipakai
+	// untuk mematikan jalur ini bila perlu.
+	direct := true
+	if c.DirectMode != nil {
+		direct = *c.DirectMode
+	}
 	opts := []gotiktoklive.TikTokLiveOption{}
+	if direct {
+		opts = append(opts, gotiktoklive.DirectMode)
+		logf("direct (signature-free) mode enabled")
+	}
 	if c.ConnectUrl != "" {
 		opts = append(opts, gotiktoklive.ConnectUrl(c.ConnectUrl))
 	}

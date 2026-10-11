@@ -104,7 +104,7 @@ void CloseIfValid(HANDLE &h)
 namespace geseki::tiktok {
 
 bool Start(const std::string &username, const std::string &signerUrl,
-           const std::string &apiKey, MessageHandler handler)
+           const std::string &apiKey, bool direct, MessageHandler handler)
 {
 	Stop();
 
@@ -186,6 +186,10 @@ bool Start(const std::string &username, const std::string &signerUrl,
 			json += ",\"signerUrl\":\"" + signerUrl + "\"";
 		if (!apiKey.empty())
 			json += ",\"apiKey\":\"" + apiKey + "\"";
+		// Send directMode explicitly so the plugin's checkbox wins over the
+		// sidecar default. Omitting it would leave the sidecar on its built-in
+		// default (on), which would silently ignore an unchecked box.
+		json += std::string(",\"directMode\":") + (direct ? "true" : "false");
 		json += "}";
 		Send(json);
 	}
@@ -255,7 +259,8 @@ bool Running()
 
 namespace geseki::tiktok {
 
-bool Start(const std::string &, const std::string &, const std::string &, MessageHandler)
+bool Start(const std::string &, const std::string &, const std::string &, bool,
+           MessageHandler)
 {
 	return false;
 }

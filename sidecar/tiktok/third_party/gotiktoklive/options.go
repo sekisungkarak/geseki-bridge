@@ -30,6 +30,15 @@ func ConnectUrl(url string) TikTokLiveOption {
 	}
 }
 
+// DirectMode enables the signature-free direct WebSocket path: room data is
+// fetched with no sign server at all (a ttwid cookie plus the ws_direct
+// endpoint), removing the third-party per-IP quota entirely. When the direct
+// handshake fails the library falls back to /connect and then the signer.
+func DirectMode(t *TikTok) error {
+	t.directEnabled = true
+	return nil
+}
+
 // DisableSigningLimitsValidation will disable querying the signer for limits and using those as the reasonable limits
 // for signing requests per second. Instead, this library will be limited to signing only 5 signing requests per minute
 // and may limit functionality compared to the request limit the signer provides.

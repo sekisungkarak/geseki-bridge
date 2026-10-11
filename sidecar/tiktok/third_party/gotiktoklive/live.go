@@ -43,6 +43,12 @@ type Live struct {
 	done     func() <-chan struct{}
 	cancel   context.CancelFunc
 
+	// direct menandai koneksi lewat jalur tanpa tanda tangan (ws_direct).
+	// ttwid dan directUA hanya terisi pada jalur itu.
+	direct   bool
+	ttwid    string
+	directUA string
+
 	ID       string
 	Info     *RoomInfo
 	GiftInfo *GiftInfo
@@ -103,8 +109,7 @@ func (l *Live) fetchRoom() error {
 	// }
 	// l.GiftInfo = giftInfo
 
-	err = l.getRoomData()
-	if err != nil {
+	if err := l.getRoomData(); err != nil {
 		return err
 	}
 	return nil
@@ -227,6 +232,20 @@ func (l *Live) getGiftInfo() (*GiftInfo, error) {
 
 func (l *Live) getRoomData() error {
 	t := l.t
+
+	// Jalur direct diprioritaskan: tanpa tanda tangan, tanpa sign server, dan
+	// tanpa kuota pihak ketiga. Bila diaktifkan, room data tidak perlu diambil
+	// lewat /webcast/fetch bertanda tangan sama sekali; cukup ambil ttwid dan
+	// susun URL WebSocket. Bila gagal, jatuh ke jalur lama di bawah.
+	if t.directEnabled {
+		if err := l.prepareDirect(); err == nil {
+			l.direct = true
+			t.debugHandler("using signature-free direct websocket")
+			return nil
+		} else {
+			t.debugHandler("direct unavailable, falling back to signer: %v", err)
+		}
+	}
 
 	params := copyMap(defaultGETParams)
 	params["room_id"] = l.ID

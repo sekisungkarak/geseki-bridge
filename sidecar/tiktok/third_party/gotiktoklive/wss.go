@@ -193,8 +193,12 @@ func (l *Live) parseWssMsg(wssMsg []byte) error {
 	}
 
 	if rsp.PayloadType == "msg" {
+		payload, err := gunzipIfNeeded(rsp.Payload)
+		if err != nil {
+			return fmt.Errorf("Failed to decompress WebcastResponse: %w", err)
+		}
 		var response pb.WebcastResponse
-		if err := proto.Unmarshal(rsp.Payload, &response); err != nil {
+		if err := proto.Unmarshal(payload, &response); err != nil {
 			return fmt.Errorf("Failed to unmarshal proto WebcastResponse: %w", err)
 		}
 		if response.NeedsAck {
@@ -293,10 +297,18 @@ func (l *Live) tryConnectionUpgrade() error {
 	if l.wsURL == "" {
 		return fmt.Errorf("cannot upgrade connection without a wsURL")
 	}
-	if l.wsParams == nil {
-		return fmt.Errorf("cannot upgrade connection without a wsURL")
+
+	// Jalur direct membuka soket sendiri (heartbeat + enter-room) lalu memakai
+	// readSocket yang sama. Jalur lama tetap butuh wsParams dari PushServer.
+	var err error
+	if l.direct {
+		err = l.connectDirect()
+	} else {
+		if l.wsParams == nil {
+			return fmt.Errorf("cannot upgrade connection without a wsURL")
+		}
+		err = l.connect(l.wsURL, l.wsParams)
 	}
-	err := l.connect(l.wsURL, l.wsParams)
 	if err != nil {
 		close(l.Events)
 		return fmt.Errorf("Connection upgrade failed: %w", err)
@@ -313,6 +325,10 @@ func (l *Live) tryConnectionUpgrade() error {
 	}()
 	go func() {
 		defer l.wg.Done()
+		if l.direct {
+			l.sendHeartbeatDirect()
+			return
+		}
 		l.sendPing()
 	}()
 

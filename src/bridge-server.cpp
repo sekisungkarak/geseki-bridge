@@ -548,14 +548,11 @@ geseki::bridge::Config LoadConfigFile()
 	cfg.tiktok_username = DataString(data, "tiktok_username");
 	cfg.tiktok_api_key = DataString(data, "tiktok_api_key");
 	cfg.tiktok_autoconnect = obs_data_get_bool(data, "tiktok_autoconnect");
+	// Default to on when the key is absent (existing configs predate the
+	// checkbox), so an upgrade keeps the direct path the sidecar ships with.
+	cfg.tiktok_direct = !obs_data_has_user_value(data, "tiktok_direct") ||
+			    obs_data_get_bool(data, "tiktok_direct");
 	cfg.alt_connection = obs_data_get_bool(data, "alt_connection");
-	// Fall back to the struct default when the key is absent: reading an int
-	// that is not there yields 0, which is not a usable port.
-	if (obs_data_has_user_value(data, "sign_server_port")) {
-		const long long sp = obs_data_get_int(data, "sign_server_port");
-		if (sp > 0 && sp <= 65535)
-			cfg.sign_server_port = static_cast<int>(sp);
-	}
 	obs_data_release(data);
 	return cfg;
 }
@@ -575,8 +572,8 @@ void SaveConfigFile(const geseki::bridge::Config &cfg)
 	obs_data_set_string(data, "tiktok_username", cfg.tiktok_username.c_str());
 	obs_data_set_string(data, "tiktok_api_key", cfg.tiktok_api_key.c_str());
 	obs_data_set_bool(data, "tiktok_autoconnect", cfg.tiktok_autoconnect);
+	obs_data_set_bool(data, "tiktok_direct", cfg.tiktok_direct);
 	obs_data_set_bool(data, "alt_connection", cfg.alt_connection);
-	obs_data_set_int(data, "sign_server_port", cfg.sign_server_port);
 	if (!obs_data_save_json_safe(data, path.c_str(), "tmp", "bak"))
 		obs_log(LOG_WARNING, "geseki-bridge: could not save config to %s", path.c_str());
 	obs_data_release(data);
@@ -1004,6 +1001,9 @@ bool g_tt_should_run = false;
 std::string g_tt_user;
 std::string g_tt_key;
 std::string g_tt_signer;
+// Kept beside the other restart intents so the watchdog relaunches the sidecar
+// with the same direct-mode choice the user last saved.
+bool g_tt_direct = true;
 
 // Serialises calls into the supervisor: the maintenance thread may be inside
 // tiktok::Start() when Stop() runs, and the supervisor is not re-entrant.
@@ -1071,648 +1071,24 @@ void OnSidecarMessage(const std::string &line)
 
 // Starts (or restarts) the sidecar and records the intent so the watchdog can
 // bring it back if it dies.
-// ------------------------------------------------------- local sign server
-//
-// NOTE: the plugin NO LONGER STARTS THIS. TikTok room data comes from a
-// signature-free endpoint, and the optional API key is the only fallback, so
-// the launcher below is kept for reference only and is never called. The
-// sources of the sign server itself stay in the repository (sign-server/),
-// but they are not shipped with a release and are not run by the plugin.
-
-std::mutex g_signer_mu;
-HANDLE g_signer_proc = nullptr;
-std::atomic<bool> g_signer_up{false};
-// False when we adopted a server that was already running (an orphan from a
-// previous OBS that was killed). We must never kill a process we did not
-// start, so StopSignServer only terminates our own child.
-std::atomic<bool> g_signer_ours{false};
-// Owns the sign server process tree (cmd.exe -> node.exe -> Chrome).
-// KILL_ON_JOB_CLOSE tears the whole tree down when this process exits, even on
-// a crash. TerminateProcess on the cmd.exe handle alone left node.exe and its
-// Chrome children behind, and the next OBS session adopted those orphans.
-HANDLE g_signer_job = nullptr;
-// Port the sign server we started or adopted listens on, so StopSignServer can
-// reach it. Atomic because StartSignServer records it from the load path while
-// Stop() reads it from the shutdown path.
-std::atomic<int> g_signer_port{0};
-// True when the server on the port is a Geseki sign server we recognise (its
-// /health answered with our build). A foreign process that merely holds the
-// port is not one, and must never be touched.
-std::atomic<bool> g_signer_known{false};
-// PID of the OBS that launched an adopted sign server, from its /health. 0
-// when unknown. A later OBS leaves that server alone while the process is
-// alive, and only lets an orphan (its owner has exited) expire.
-std::atomic<unsigned long> g_signer_owner_pid{0};
-// How long a sign server may outlive OBS before it shuts itself down. Long
-// enough that a quick OBS restart reuses the warm session, short enough that a
-// forgotten one does not linger as an orphan.
-const int kSignerGraceMs = 3 * 60 * 1000;
-
-// Directory holding the plugin DLL, sign-server/ sits beside it.
-std::string ModuleDir()
-{
-	HMODULE self = nullptr;
-	GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-				   GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-			   reinterpret_cast<LPCWSTR>(&ModuleDir), &self);
-	wchar_t path[MAX_PATH]{};
-	GetModuleFileNameW(self, path, MAX_PATH);
-	std::wstring dir(path);
-	const size_t slash = dir.find_last_of(L"\\/");
-	if (slash != std::wstring::npos)
-		dir.resize(slash);
-	return WideToUtf8(dir);
-}
-
-// True when `node` can be run. Node only powers the optional local sign
-// server: TikTok connects through a signature-free endpoint without it.
-bool NodeAvailable()
-{
-	wchar_t buf[MAX_PATH]{};
-	return SearchPathW(nullptr, L"node.exe", nullptr, MAX_PATH, buf, nullptr) > 0;
-}
-
-bool SignServerRunning() { return g_signer_up.load(); }
-
-std::string SignerUrlFor(int port)
-{
-	return std::string("http://127.0.0.1:") + std::to_string(port);
-}
-
-// True when the sign server has its dependencies installed. node_modules is
-// not committed (55 MB), so a fresh clone needs one `npm install`.
-bool SignServerDepsReady(const std::string &dir)
-{
-	return GetFileAttributesW(Utf8ToWide(dir + "\\node_modules").c_str()) !=
-	       INVALID_FILE_ATTRIBUTES;
-}
-
-// Runs `npm install --omit=dev` in `dir`, synchronously. Called on a worker
-// thread only, so the OBS UI never blocks. Returns true on exit code 0.
-bool RunNpmInstall(const std::string &dir)
-{
-	// npm is a .cmd shim on Windows and CreateProcessW does not apply PATHEXT,
-	// so run it through the command shell. PUPPETEER_SKIP_DOWNLOAD is set
-	// inline: Puppeteer would otherwise download its own Chrome, which is slow
-	// and fails on a flaky network, while the sign server uses the Chrome
-	// already installed on the machine.
-	std::wstring cmd =
-		L"cmd.exe /c \"set PUPPETEER_SKIP_DOWNLOAD=1 && "
-		L"set PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=1 && "
-		L"npm install --omit=dev --no-audit --no-fund\"";
-	std::vector<wchar_t> cmd_buf(cmd.begin(), cmd.end());
-	cmd_buf.push_back(L'\0');
-
-	STARTUPINFOW si{};
-	si.cb = sizeof(si);
-	PROCESS_INFORMATION pi{};
-	const BOOL ok = CreateProcessW(nullptr, cmd_buf.data(), nullptr, nullptr, FALSE,
-				       CREATE_NO_WINDOW, nullptr, Utf8ToWide(dir).c_str(), &si, &pi);
-	if (!ok) {
-		obs_log(LOG_WARNING, "geseki-bridge: npm install could not start (err %lu)",
-			GetLastError());
-		return false;
-	}
-	WaitForSingleObject(pi.hProcess, 10 * 60 * 1000); // 10 min ceiling
-	DWORD code = 1;
-	GetExitCodeProcess(pi.hProcess, &code);
-	CloseHandle(pi.hThread);
-	CloseHandle(pi.hProcess);
-	return code == 0;
-}
-
-// True when something already answers the sign server health check on
-// `port`. Used to adopt an orphan left behind when OBS was killed.
-bool SignServerResponding(int port)
-{
-	Socket s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-	if (s == kInvalidSocket)
-		return false;
-
-	// Short timeouts: this runs on the OBS startup path.
-	DWORD tv = 400;
-	setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char *>(&tv), sizeof(tv));
-	setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char *>(&tv), sizeof(tv));
-
-	sockaddr_in addr{};
-	addr.sin_family = AF_INET;
-	addr.sin_port = htons(static_cast<u_short>(port));
-	addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-	const bool up = connect(s, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) == 0;
-	CloseSocket(s);
-	return up;
-}
-
-// True when `pid` names a running process. Tells a sign server that another
-// OBS is still using from one whose owner has exited (an orphan we may let go).
-bool ProcessAlive(unsigned long pid)
-{
-	if (pid == 0)
-		return false;
-	HANDLE h = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE,
-			       static_cast<DWORD>(pid));
-	if (!h)
-		return false;
-	const DWORD w = WaitForSingleObject(h, 0);
-	CloseHandle(h);
-	return w == WAIT_TIMEOUT;
-}
-
-// Job that owns the sign server tree. KILL_ON_JOB_CLOSE means the tree dies
-// when this process exits, including on a crash where no cleanup code runs.
-HANDLE EnsureSignerJob()
-{
-	if (g_signer_job)
-		return g_signer_job;
-
-	HANDLE job = CreateJobObjectW(nullptr, nullptr);
-	if (!job)
-		return nullptr;
-
-	JOBOBJECT_EXTENDED_LIMIT_INFORMATION info{};
-	info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-	if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, &info,
-				     sizeof(info))) {
-		CloseHandle(job);
-		return nullptr;
-	}
-	g_signer_job = job;
-	return job;
-}
-
-// Drops KILL_ON_JOB_CLOSE from the sign server job. Closing a job whose limit
-// no longer asks for a kill leaves its processes running, which is what lets
-// the sign server survive a normal OBS exit. A crash still tears the tree down
-// because no cleanup code runs to clear the flag.
-void ClearKillOnJobClose()
-{
-	if (!g_signer_job)
-		return;
-	JOBOBJECT_EXTENDED_LIMIT_INFORMATION info{};
-	info.BasicLimitInformation.LimitFlags = 0;
-	SetInformationJobObject(g_signer_job, JobObjectExtendedLimitInformation,
-				&info, sizeof(info));
-}
-
-// PID of the process listening on `port`, or 0. Used only to replace a sign
-// server built for a different version, so it is always ours.
-DWORD PidListeningOn(int port)
-{
-	DWORD size = 0;
-	GetExtendedTcpTable(nullptr, &size, FALSE, AF_INET, TCP_TABLE_OWNER_PID_LISTENER, 0);
-	if (size == 0)
-		return 0;
-
-	std::vector<uint8_t> buf(size);
-	auto *tbl = reinterpret_cast<MIB_TCPTABLE_OWNER_PID *>(buf.data());
-	if (GetExtendedTcpTable(tbl, &size, FALSE, AF_INET, TCP_TABLE_OWNER_PID_LISTENER, 0) !=
-	    NO_ERROR)
-		return 0;
-
-	for (DWORD i = 0; i < tbl->dwNumEntries; ++i) {
-		const auto &row = tbl->table[i];
-		if (ntohs(static_cast<u_short>(row.dwLocalPort)) == port)
-			return row.dwOwningPid;
-	}
-	return 0;
-}
-
-// Kills `pid` and all of its descendants. Terminating the parent alone leaves
-// the children (node.exe's Chrome) running, which is exactly how the orphan
-// sign server was created.
-void KillProcessTree(DWORD pid)
-{
-	if (pid == 0)
-		return;
-
-	std::map<DWORD, std::vector<DWORD>> kids;
-	HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-	if (snap != INVALID_HANDLE_VALUE) {
-		PROCESSENTRY32W pe{};
-		pe.dwSize = sizeof(pe);
-		if (Process32FirstW(snap, &pe)) {
-			do {
-				kids[pe.th32ParentProcessID].push_back(pe.th32ProcessID);
-			} while (Process32NextW(snap, &pe));
-		}
-		CloseHandle(snap);
-	}
-
-	// Depth-first order, then kill in reverse so children go before parents.
-	std::vector<DWORD> order;
-	std::vector<DWORD> stack{pid};
-	while (!stack.empty()) {
-		const DWORD cur = stack.back();
-		stack.pop_back();
-		order.push_back(cur);
-		const auto it = kids.find(cur);
-		if (it != kids.end())
-			for (const DWORD k : it->second)
-				stack.push_back(k);
-	}
-	for (auto it = order.rbegin(); it != order.rend(); ++it) {
-		HANDLE h = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, *it);
-		if (!h)
-			continue;
-		TerminateProcess(h, 0);
-		CloseHandle(h);
-	}
-}
-
-// Decodes an HTTP/1.1 chunked body: "<hex size>\r\n<data>\r\n" runs, ended
-// by a zero-size chunk. A body that is not chunked (no CRLF before the first
-// brace) is returned unchanged, so this is safe to call unconditionally.
-std::string DecodeChunked(const std::string &in)
-{
-	// Not chunked when the payload starts immediately with JSON.
-	if (in.empty() || in[0] == '{' || in[0] == '[')
-		return in;
-
-	std::string out;
-	size_t i = 0;
-	while (i < in.size()) {
-		const size_t eol = in.find("\r\n", i);
-		if (eol == std::string::npos)
-			break;
-		std::string hex = in.substr(i, eol - i);
-		if (const size_t semi = hex.find(';'); semi != std::string::npos)
-			hex.resize(semi); // chunk extensions are not part of the size
-		unsigned long n = 0;
-		try {
-			n = std::stoul(hex, nullptr, 16);
-		} catch (...) {
-			break;
-		}
-		i = eol + 2;
-		if (n == 0)
-			break;
-		if (i + n > in.size()) {
-			out.append(in, i, in.size() - i);
-			break;
-		}
-		out.append(in, i, n);
-		i += n;
-		if (i + 1 < in.size() && in[i] == '\r' && in[i + 1] == '\n')
-			i += 2;
-	}
-	return out;
-}
-
-// Asks the sign server on `port` for /health. True when a sign server answers
-// with status "ok". `build` receives the version it was launched for; empty
-// means a server from before version tagging, i.e. certainly stale.
-bool ProbeSignServerHealth(int port, std::string *build, unsigned long *owner_pid = nullptr)
-{
-	Socket s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-	if (s == kInvalidSocket)
-		return false;
-
-	DWORD tv = 600;
-	setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char *>(&tv), sizeof(tv));
-	setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char *>(&tv), sizeof(tv));
-
-	sockaddr_in addr{};
-	addr.sin_family = AF_INET;
-	addr.sin_port = htons(static_cast<u_short>(port));
-	addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-	if (connect(s, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) != 0) {
-		CloseSocket(s);
-		return false;
-	}
-
-	const std::string req =
-		"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
-	if (!SendAll(s, req.data(), req.size())) {
-		CloseSocket(s);
-		return false;
-	}
-
-	std::string resp;
-	char buf[4096];
-	for (;;) {
-		const int r = recv(s, buf, static_cast<int>(sizeof(buf)), 0);
-		if (r <= 0)
-			break;
-		resp.append(buf, static_cast<size_t>(r));
-		if (resp.size() > 128 * 1024)
-			break;
-	}
-	CloseSocket(s);
-
-		const size_t split = resp.find("\r\n\r\n");
-	if (split == std::string::npos)
-		return false;
-
-	// Node answers /health with Transfer-Encoding: chunked (no Content-Length),
-	// so the body is "<hex size>\r\n<data>\r\n" runs ending in "0\r\n\r\n".
-	// Decode it before parsing, or every probe fails and every server looks
-	// foreign.
-	std::string head = resp.substr(0, split);
-	std::transform(head.begin(), head.end(), head.begin(),
-		       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-	std::string body = resp.substr(split + 4);
-	if (head.find("transfer-encoding: chunked") != std::string::npos)
-		body = DecodeChunked(body);
-
-	geseki::json::Value v;
-	if (!geseki::json::Value::Parse(body, v))
-		return false;
-	const auto *st = v.find("status");
-	if (!st || st->as_string() != "ok")
-		return false;
-	if (build) {
-		const auto *b = v.find("build");
-		*build = b ? b->as_string() : std::string();
-	}
-	if (owner_pid) {
-		const auto *o = v.find("ownerPid");
-		*owner_pid = o ? static_cast<unsigned long>(o->as_int(0)) : 0UL;
-	}
-	return true;
-}
-
-// Asks the sign server to shut itself down after `ms` unless another request
-// arrives first. Synchronous, and returns whether the server acknowledged: the
-// caller must know the outcome before it lets go of the process. This is what
-// lets a warm sign server outlive a normal OBS exit (so a quick reopen reuses
-// it with no fresh SDK warm-up against TikTok) without becoming an orphan.
-bool RequestSignServerGrace(int port, int ms)
-{
-	Socket s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-	if (s == kInvalidSocket)
-		return false;
-	DWORD tv = 5000;
-	setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char *>(&tv), sizeof(tv));
-	setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char *>(&tv), sizeof(tv));
-	sockaddr_in addr{};
-	addr.sin_family = AF_INET;
-	addr.sin_port = htons(static_cast<u_short>(port));
-	addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-	bool ok = false;
-	if (connect(s, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) == 0) {
-		const std::string req = "GET /grace?ms=" + std::to_string(ms) +
-			" HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
-		if (SendAll(s, req.data(), req.size())) {
-			std::string resp;
-			char buf[1024];
-			for (;;) {
-				const int r = recv(s, buf, static_cast<int>(sizeof(buf)), 0);
-				if (r <= 0)
-					break;
-				resp.append(buf, static_cast<size_t>(r));
-				if (resp.size() > 16 * 1024)
-					break;
-			}
-			// A 200 status line means the timer is armed.
-			ok = resp.rfind("HTTP/1.1 200", 0) == 0;
-		}
-	}
-	CloseSocket(s);
-	return ok;
-}
-
-// Launches `node server.mjs` from sign-server/. Returns false (and logs) when
-// Node is missing or the script is not there.
-bool StartSignServer(int port)
-{
-	if (g_signer_up.load())
-		return true;
-
-	// Something already holds the port. Adopt it ONLY when it is this build:
-	// an orphan from an older plugin behaves differently, and once adopted it is
-	// never replaced (Stop() leaves a process it did not start alone), so the
-	// stale server would be reused for the rest of the machine's uptime.
-	if (SignServerResponding(port)) {
-		std::string build;
-		unsigned long owner_pid = 0;
-		if (!ProbeSignServerHealth(port, &build, &owner_pid)) {
-			// Busy, but not answering /health as a sign server: a foreign app,
-			// or a server still coming up. Adopt it rather than risk killing
-			// something that is not ours.
-			g_signer_up.store(true);
-			g_signer_ours.store(false);
-			g_signer_known.store(false);
-			g_signer_owner_pid.store(0);
-			g_signer_port = port;
-			obs_log(LOG_WARNING,
-				"geseki-bridge: port %d is busy but does not answer /health; reusing it as-is",
-				port);
-			return true;
-		}
-		if (build == GESEKI_BRIDGE_VERSION) {
-			g_signer_up.store(true);
-			g_signer_ours.store(false);
-			obs_log(LOG_INFO,
-				"geseki-bridge: reusing the sign server already on port %d (build %s)",
-				port, build.c_str());
-			// Do NOT rebuild the browser here. A restart re-warms the SDK
-			// against TikTok, and that is traffic from the user's IP, which
-			// TikTok rate-limits per address, the very thing that made
-			// restarting OBS hit the limit. A sign server only lives long
-			// enough to be adopted while its grace window is open, so it is
-			// minutes old at most: its Chrome is warm, not stale.
-			g_signer_known.store(true);
-			g_signer_owner_pid.store(owner_pid);
-			g_signer_port = port;
-			if (owner_pid && ProcessAlive(owner_pid))
-				obs_log(LOG_INFO,
-					"geseki-bridge: adopted the warm sign server on port %d (another OBS owns it, pid %lu)",
-					port, owner_pid);
-			else
-				obs_log(LOG_INFO,
-					"geseki-bridge: adopted the warm sign server on port %d (build %s)",
-					port, build.c_str());
-			return true;
-		}
-		obs_log(LOG_WARNING,
-			"geseki-bridge: replacing a sign server on port %d built for '%s' (this plugin is %s)",
-			port, build.empty() ? "unknown" : build.c_str(), GESEKI_BRIDGE_VERSION);
-		KillProcessTree(PidListeningOn(port));
-		for (int i = 0; i < 30 && PidListeningOn(port) != 0; ++i)
-			Sleep(100);
-	}
-
-	if (!NodeAvailable()) {
-		// Not fatal: the sidecar reaches TikTok through a signature-free
-		// endpoint, so the sign server is only a fallback. Say so once, at
-		// warning level, instead of implying the connection is broken.
-		obs_log(LOG_WARNING, "geseki-bridge: Node.js not found; the local sign "
-				     "server is unavailable (optional fallback). TikTok still "
-				     "connects without it.");
-		return false;
-	}
-
-	const std::string dir = ModuleDir() + "\\sign-server";
-	const std::string script = dir + "\\server.mjs";
-	if (GetFileAttributesW(Utf8ToWide(script).c_str()) == INVALID_FILE_ATTRIBUTES) {
-		obs_log(LOG_WARNING, "geseki-bridge: sign-server not found next to the "
-				     "plugin; the optional fallback signer is unavailable");
-		return false;
-	}
-
-	// Dependencies are installed once, on a worker thread: `npm install` can
-	// take a minute and must never stall OBS startup. This only prepares the
-	// optional fallback signer, so TikTok connects either way.
-	if (!SignServerDepsReady(dir)) {
-		obs_log(LOG_WARNING, "geseki-bridge: installing sign-server dependencies "
-				      "(optional fallback), TikTok connects without it; "
-				      "restart OBS to make the fallback available");
-		std::thread([dir] {
-			if (RunNpmInstall(dir))
-				obs_log(LOG_INFO, "geseki-bridge: sign-server dependencies installed; "
-						   "the fallback signer is ready after an OBS restart");
-			else
-				obs_log(LOG_WARNING, "geseki-bridge: sign-server dependency install "
-						    "failed; the optional fallback signer is unavailable");
-		}).detach();
-		return false;
-	}
-
-	// Run it hidden: the sign server is a background helper, not a window.
-	// PORT and GESEKI_BUILD go in through cmd.exe: server.mjs reads them from the
-	// environment, and a hand-built environment block is easy to get wrong
-	// (a malformed one fails with error 87 and no explanation).
-	std::wstring cmd = L"cmd.exe /c \"set PORT=" + std::to_wstring(port) +
-			   L" && set GESEKI_BUILD=" + Utf8ToWide(GESEKI_BRIDGE_VERSION) +
-			   L" && set GESEKI_OWNER_PID=" +
-			   std::to_wstring(GetCurrentProcessId()) +
-			   L" && node \"server.mjs\"\"";
-	std::vector<wchar_t> cmd_buf(cmd.begin(), cmd.end());
-	cmd_buf.push_back(L'\0');
-
-	STARTUPINFOW si{};
-	si.cb = sizeof(si);
-	PROCESS_INFORMATION pi{};
-	// CREATE_SUSPENDED so cmd.exe is inside the job before it can spawn
-	// node.exe: a job kills the tree it holds, but a child spawned a moment
-	// before the assignment would escape it.
-	const DWORD flags = CREATE_NO_WINDOW | CREATE_SUSPENDED;
-	const BOOL ok = CreateProcessW(nullptr, cmd_buf.data(), nullptr, nullptr, FALSE,
-				       flags, nullptr, Utf8ToWide(dir).c_str(), &si, &pi);
-	if (!ok) {
-		obs_log(LOG_WARNING, "geseki-bridge: could not start the sign server (err %lu)",
-			GetLastError());
-		return false;
-	}
-	// Put the whole tree (cmd.exe -> node.exe -> Chrome) in a job that dies with
-	// this process. Terminating the cmd.exe handle alone left node.exe and its
-	// Chrome children running, and the next OBS session adopted those orphans,
-	// so the sign server never went away.
-	if (HANDLE job = EnsureSignerJob()) {
-		if (!AssignProcessToJobObject(job, pi.hProcess))
-			obs_log(LOG_WARNING,
-				"geseki-bridge: sign server not placed in a job (err %lu); it may outlive OBS",
-				GetLastError());
-	} else {
-		obs_log(LOG_WARNING, "geseki-bridge: could not create the sign server job (err %lu)",
-			GetLastError());
-	}
-	ResumeThread(pi.hThread);
-	CloseHandle(pi.hThread);
-	{
-		std::lock_guard<std::mutex> lk(g_signer_mu);
-		g_signer_proc = pi.hProcess;
-	}
-	g_signer_up.store(true);
-	g_signer_ours.store(true);
-	g_signer_known.store(true);
-	g_signer_owner_pid.store(GetCurrentProcessId());
-	g_signer_port = port;
-	obs_log(LOG_INFO, "geseki-bridge: local sign server started on port %d", port);
-	return true;
-}
-
-void StopSignServer()
-{
-	std::lock_guard<std::mutex> lk(g_signer_mu);
-
-	// A normal OBS exit does NOT kill the sign server: it is asked to shut
-	// itself down after kSignerGraceMs, and a new OBS that opens within that
-	// window adopts the warm browser session instead of warming a fresh one.
-	// Warming up means real requests to TikTok from the user's IP, and TikTok
-	// rate-limits per address, exactly why restarting OBS hit the limit while
-	// staying inside one session did not. When the request cannot be delivered
-	// we fall back to the old hard kill, so a sign server is never left behind
-	// for good.
-	//
-	// An adopted server may belong to another OBS that is still running, or
-	// be an orphan whose owner has exited. A live owner's server is left
-	// strictly alone, arming a grace timer on it would kill it mid-session.
-	// An orphan may be let go: it is a Geseki sign server nobody is using.
-	const bool ours = g_signer_ours.load();
-	const bool orphan = !ours && g_signer_known.load() &&
-			    !ProcessAlive(g_signer_owner_pid.load());
-	if (!ours && !orphan) {
-		g_signer_up.store(false);
-		g_signer_port = 0;
-		return;
-	}
-
-	const bool armed = RequestSignServerGrace(g_signer_port, kSignerGraceMs);
-	if (!armed) {
-		// The server did not acknowledge, so it cannot be trusted to stop by
-		// itself. Fall back to the hard kill: a sign server must never be
-		// left behind for good.
-		if (g_signer_proc) {
-			// Closing the job kills the WHOLE tree, cmd.exe, node.exe and
-			// every Chrome child. TerminateProcess on the cmd.exe handle
-			// alone left the rest running, which is how the orphan was born.
-			const DWORD pid = GetProcessId(g_signer_proc);
-			if (g_signer_job) {
-				CloseHandle(g_signer_job);
-				g_signer_job = nullptr;
-			}
-			// Kill the tree explicitly as well. Closing the job already does
-			// it, but AssignProcessToJobObject fails when OBS itself runs
-			// inside a job, and then the children would survive the cmd.exe
-			// termination.
-			KillProcessTree(pid);
-			TerminateProcess(g_signer_proc, 0);
-			CloseHandle(g_signer_proc);
-			g_signer_proc = nullptr;
-		}
-	} else {
-		// Let go without killing. Clearing KILL_ON_JOB_CLOSE first is what
-		// lets the tree outlive this process; closing a job that still asks
-		// for a kill would tear it down on the spot. An adopted server sits
-		// in someone else's job, which we must not touch.
-		if (ours)
-			ClearKillOnJobClose();
-		if (g_signer_proc) {
-			CloseHandle(g_signer_proc);
-			g_signer_proc = nullptr;
-		}
-		if (g_signer_job) {
-			CloseHandle(g_signer_job);
-			g_signer_job = nullptr;
-		}
-		obs_log(LOG_INFO,
-			"geseki-bridge: sign server shuts itself down in %d s unless OBS returns",
-			kSignerGraceMs / 1000);
-	}
-	g_signer_up.store(false);
-	g_signer_ours.store(false);
-	g_signer_known.store(false);
-	g_signer_owner_pid.store(0);
-	g_signer_port = 0;
-}
-
-void StartSidecar(const std::string &username, const std::string &apiKey)
+void StartSidecar(const std::string &username, const std::string &apiKey,
+		  bool direct)
 {
 	// The plugin no longer starts a local sign server, so the sidecar never
-	// receives a local signer URL. It reaches TikTok through the
-	// signature-free endpoint and, when the user set one, falls back to the
-	// remote signer selected by the API key.
+	// receives a local signer URL. Its primary path is the signature-free
+	// direct WebSocket; the optional API key selects the remote signer as a
+	// fallback.
 	std::string signer;
 	{
 		std::lock_guard<std::mutex> lk(g_tt_mu);
-		// A local sign server is no longer required: the sidecar fetches room
-		// data through a signature-free endpoint, and the signer is only a
-		// fallback. So the connection runs even when the signer is missing.
+		// A local sign server is no longer required: the sidecar connects
+		// through a signature-free path, and the signer is only a fallback.
+		// So the connection runs even when the signer is missing.
 		g_tt_should_run = !username.empty();
 		g_tt_user = username;
 		g_tt_key = apiKey;
 		g_tt_signer = signer;
+		g_tt_direct = direct;
 	}
 	if (username.empty()) {
 		std::lock_guard<std::mutex> lk(g_tt_call_mu);
@@ -1723,7 +1099,8 @@ void StartSidecar(const std::string &username, const std::string &apiKey)
 	SetTikTokStatus("connecting", "");
 	{
 		std::lock_guard<std::mutex> lk(g_tt_call_mu);
-		geseki::tiktok::Start(username, signer, apiKey, OnSidecarMessage);
+		geseki::tiktok::Start(username, signer, apiKey, direct,
+				      OnSidecarMessage);
 	}
 }
 
@@ -1767,7 +1144,7 @@ void HandleTikTokConnect(const std::string &username, const std::string &apiKey)
 	}
 	// Publish the new name immediately; the avatar follows with the room.
 	Broadcast(BuildStatus(), "status");
-	StartSidecar(c.tiktok_username, c.tiktok_api_key);
+	StartSidecar(c.tiktok_username, c.tiktok_api_key, c.tiktok_direct);
 }
 
 // ------------------------------------------------------------ client messages
@@ -2148,12 +1525,14 @@ void MaintenanceLoop()
 
 		bool want = false;
 		std::string user, key, signer;
+		bool direct = true;
 		{
 			std::lock_guard<std::mutex> lk(g_tt_mu);
 			want = g_tt_should_run;
 			user = g_tt_user;
 			key = g_tt_key;
 			signer = g_tt_signer;
+			direct = g_tt_direct;
 		}
 		if (!want || user.empty() || geseki::tiktok::Running())
 			continue;
@@ -2167,7 +1546,8 @@ void MaintenanceLoop()
 		obs_log(LOG_INFO, "geseki-bridge: (re)starting TikTok sidecar");
 		{
 			std::lock_guard<std::mutex> lk(g_tt_call_mu);
-			if (geseki::tiktok::Start(user, signer, key, OnSidecarMessage))
+			if (geseki::tiktok::Start(user, signer, key, direct,
+						  OnSidecarMessage))
 				failures = 0;
 			else
 				++failures;
@@ -2345,7 +1725,7 @@ void Start()
 	}
 
 	if (cfg.tiktok_autoconnect && !cfg.tiktok_username.empty())
-		StartSidecar(cfg.tiktok_username, cfg.tiktok_api_key);
+		StartSidecar(cfg.tiktok_username, cfg.tiktok_api_key, cfg.tiktok_direct);
 
 	obs_log(LOG_INFO, "geseki-bridge: listening on ws://127.0.0.1:%d/ws (SMTC %s)",
 		cfg.port, g_smtc_available.load() ? "available" : "unavailable");
@@ -2440,9 +1820,11 @@ void SaveConfig(const Config &cfg)
 	}
 	if (cfg.tiktok_username != old.tiktok_username ||
 	    cfg.tiktok_api_key != old.tiktok_api_key ||
+	    cfg.tiktok_direct != old.tiktok_direct ||
 	    cfg.alt_connection != old.alt_connection) {
 		if (!cfg.tiktok_username.empty())
-			StartSidecar(cfg.tiktok_username, cfg.tiktok_api_key);
+			StartSidecar(cfg.tiktok_username, cfg.tiktok_api_key,
+				     cfg.tiktok_direct);
 		else
 			StopSidecar();
 	}

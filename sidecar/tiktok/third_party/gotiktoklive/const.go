@@ -32,6 +32,13 @@ const (
 	connectUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
 	connectClientUA  = "tiktok-live-connector/2.5.0 win32"
 
+	// Jalur direct: WebSocket tanpa tanda tangan. Endpoint ws_reuse_supplement
+	// dengan ws_direct=1 tidak meminta X-Bogus/msToken, jadi tidak ada sign
+	// server maupun kuota per-IP pihak ketiga.
+	directCDNHost   = "webcast-ws.tiktok.com"
+	directWSPath    = "/webcast/im/ws_proxy/ws_reuse_supplement/"
+	directUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36"
+
 	urlCheckLive      = "room/check_alive/"
 	clientNameDefault = "gotiktok_live"
 	apiKeyDefault     = ""

@@ -59,6 +59,7 @@ type TikTok struct {
 	wsTraceOut               *bufio.Writer
 	signerUrl                string
 	connectUrl               string
+	directEnabled            bool
 	getLimits                bool
 	limiter                  ratelimit.Limiter
 }
@@ -114,7 +115,14 @@ func NewTikTokWithApiKey(clientName, apiKey string, options ...TikTokLiveOption)
 		cancel()
 		return nil, err
 	}
-	if tiktok.getLimits && tiktok.signerUrl != "" {
+	if tiktok.directEnabled {
+		// Jalur direct tidak memakai signer sama sekali, jadi jangan tanyakan
+		// kuotanya: permintaan itu justru menyentuh layanan pihak ketiga yang
+		// ingin dihindari. Limiter tetap dipasang sebagai pengaman.
+		slog.Debug("direct mode: skipping signer limits query")
+		limiter := ratelimit.New(10, ratelimit.Per(1*time.Minute), ratelimit.WithoutSlack)
+		tiktok.limiter = limiter
+	} else if tiktok.getLimits && tiktok.signerUrl != "" {
 		limits, err := GetSignerLimits(tiktok.signerUrl, tiktok.apiKey)
 		if err != nil {
 			cancel()

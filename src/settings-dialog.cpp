@@ -7,8 +7,8 @@
  * settings live.
  *
  * The dialog mirrors what the sidecar actually does: room data comes from a
- * signature-free endpoint that needs nothing installed, so the API key below
- * is only a fallback for when that primary path fails.
+ * signature-free direct WebSocket to TikTok that needs nothing installed, so
+ * the API key below is only a fallback for when that primary path fails.
  */
 #include "settings-dialog.hpp"
 
@@ -42,8 +42,8 @@ void ShowSettingsDialog(void *parent)
 	intro->setWordWrap(true);
 	outer->addWidget(intro);
 
-	// Primary path: the sidecar fetches room data from a signature-free
-	// endpoint, so connecting needs nothing installed.
+	// Primary path: the sidecar connects through a signature-free direct
+	// WebSocket to TikTok, so connecting needs nothing installed.
 	auto *primary = new QGroupBox("TikTok connection");
 	auto *primary_form = new QFormLayout(primary);
 	primary_form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
@@ -59,6 +59,14 @@ void ShowSettingsDialog(void *parent)
 		"Used only when the primary connection to TikTok fails. Raises the "
 		"rate limit of the signing service the sidecar falls back to.");
 	primary_form->addRow("API key (optional)", key);
+
+	auto *direct = new QCheckBox("Direct connection (no signing service)");
+	direct->setChecked(cfg.tiktok_direct);
+	direct->setToolTip(
+		"On by default. Connects straight to TikTok without a signing "
+		"service, so there is no daily quota to run out of. Turn it off "
+		"only to force the older route through the signing service.");
+	primary_form->addRow(direct);
 
 	auto *auto_conn = new QCheckBox("Connect automatically when OBS starts");
 	auto_conn->setChecked(cfg.tiktok_autoconnect);
@@ -96,9 +104,10 @@ void ShowSettingsDialog(void *parent)
 	next.tiktok_username = user->text().trimmed().toStdString();
 	next.tiktok_api_key = key->text().toStdString();
 	next.tiktok_autoconnect = auto_conn->isChecked();
+	next.tiktok_direct = direct->isChecked();
 	next.port = port->value();
-	// alt_connection and sign_server_port keep their stored values: the
-	// config fields stay for compatibility, they are just no longer edited.
+	// alt_connection keeps its stored value: the config field stays for
+	// compatibility, it is just no longer edited.
 	geseki::bridge::SaveConfig(next);
 }
 

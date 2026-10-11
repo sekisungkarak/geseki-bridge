@@ -35,13 +35,13 @@ The plugin also answers a small HTTP surface (outside the upgrade):
 `GET /health` returns:
 
 ```json
-{ "ok": true, "bridge": "geseki-bridge/0.8.0", "protocol": 1 }
+{ "ok": true, "bridge": "geseki-bridge/1.0.0", "protocol": 1 }
 ```
 
 `GET /bridge-port` returns:
 
 ```json
-{ "ok": true, "bridge": "geseki-bridge/0.8.0", "protocol": 1, "wsPort": 47800, "discoveryPort": 47800 }
+{ "ok": true, "bridge": "geseki-bridge/1.0.0", "protocol": 1, "wsPort": 47800, "discoveryPort": 47800 }
 ```
 
 ### Port discovery
@@ -91,7 +91,7 @@ Sent once, immediately after the socket opens.
 {
   "type": "hello",
   "protocol": 1,
-  "bridge": "geseki-bridge/0.8.0",
+  "bridge": "geseki-bridge/1.0.0",
   "capabilities": ["tiktok", "nowplaying"]
 }
 ```
@@ -288,7 +288,7 @@ REST payload used, so existing widget code keeps working.
 {
   "type": "nowplaying",
   "data": {
-    "app_version": "0.8.0",
+    "app_version": "1.0.0",
     "current_session_id": "Spotify.exe",
     "sessions": [
       {
@@ -385,23 +385,27 @@ The TikTok sidecar is a small Go binary wrapping
 * The plugin starts it, keeps it alive, and restarts it if it exits.
 * It talks to the plugin over **stdin/stdout** (newline-delimited JSON), not a
   second port, so there is nothing extra to firewall.
-* Room data is fetched from a **signature-free endpoint** (`/connect`) that
-  replaced `/webcast/im/fetch`, which TikTok now answers with 200 and an empty
-  body. It returns the same protobuf and needs no signature, so a connection
-  works with no sign server and no Node.js installed.
-* A remote signer is kept only as a **fallback** for when that endpoint is
-  unavailable. It is selected by the optional `tiktok_api_key`, which also
-  raises that service's shared rate limit.
-* The plugin no longer starts a local sign server. Its sources stay in the
-  repository (`sign-server/`) for reference, but they are not shipped with a
-  release and are never run.
+* Room data is fetched over a **signature-free WebSocket** to TikTok itself: a
+  short-lived anonymous `ttwid` cookie plus the `ws_direct` endpoint
+  (`wss://webcast-ws.tiktok.com/webcast/im/ws_proxy/ws_reuse_supplement/`).
+  No sign server, no API key, no `X-Bogus`/`msToken`, and therefore no
+  third-party per-IP quota. This is the primary path.
+* Two fallbacks sit behind it: the signature-free `/connect` endpoint (which
+  replaced `/webcast/im/fetch`, now answered with 200 and an empty body), then
+  a remote signer selected by the optional `tiktok_api_key`. If the direct
+  handshake fails the connection degrades automatically, so it never depends
+  on the direct path alone.
+* The plugin no longer starts a local sign server, and its sources are no
+  longer part of the repository: the direct WebSocket plus the two fallbacks
+  above are the whole connection path.
 * The API key is stored in the plugin's config, never in a widget URL.
 
 Sidecar protocol (internal, not public API):
 
 | Direction | Message |
 | --- | --- |
-| plugin → sidecar | `{"cmd":"connect","username":"…","connectUrl":"https://api.eulerstream.com"}` (direct, no signer) |
+| plugin → sidecar | `{"cmd":"connect","username":"…"}` (signature-free direct WebSocket, default) |
+| plugin → sidecar | `{"cmd":"connect","username":"…","directMode":false,"connectUrl":"https://api.eulerstream.com"}` (disable direct, use `/connect`) |
 | plugin → sidecar | `{"cmd":"connect","username":"…","apiKey":"…"}` (Euler Stream as fallback) |
 | plugin → sidecar | `{"cmd":"disconnect"}` |
 | plugin → sidecar | `{"cmd":"quit"}` |

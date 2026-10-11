@@ -21,8 +21,10 @@ using MessageHandler = std::function<void(const std::string &line)>;
 // `signerUrl` points the TikTok client at the local sign server. Leave it
 // empty to use the alternative connection mode instead; `apiKey` is only
 // meaningful there, where it raises the signing rate limit.
+// `direct` selects the signature-free direct WebSocket (the default path).
+// When false the sidecar skips it and uses /connect, then the signer.
 bool Start(const std::string &username, const std::string &signerUrl,
-           const std::string &apiKey, MessageHandler handler);
+           const std::string &apiKey, bool direct, MessageHandler handler);
 
 // Stops the sidecar: asks it to quit, then kills it if it lingers.
 void Stop();
