@@ -67,39 +67,91 @@ jobs:
         run: |
           $version = (Get-Content buildspec.json -Raw | ConvertFrom-Json).version
           $name = "geseki-bridge-$version-windows-x64"
-          # Flat OBS tree (obs-plugins/64bit + data/obs-plugins/...) so the zip
-          # can be extracted straight into an OBS install folder -- portable or
-          # installer. A named bundle would only work for installer OBS via
-          # %ProgramData%\obs-studio\plugins, which portable OBS ignores.
-          Compress-Archive -Path "release/obs-plugins", "release/data" -DestinationPath "$name.zip" -Force
+          # Two layouts in one zip. OBS 30-32 loads the flat tree
+          # (obs-plugins/64bit + data/obs-plugins/...) that can be extracted
+          # straight into an OBS install folder. OBS 33 moved third-party
+          # plugins to a per-plugin folder (plugins/<name>/<name>.dll +
+          # data/, see obsproject.com/kb/legacy-plugin-locations), so that
+          # folder ships as-is: installer users copy it into
+          # %ProgramData%\obs-studio\plugins, portable users into
+          # <OBS folder>\plugins.
+          New-Item -ItemType Directory -Force -Path "package/OBS 30-32" | Out-Null
+          New-Item -ItemType Directory -Force -Path "package/OBS 33/geseki-bridge" | Out-Null
+          Copy-Item "release/obs-plugins" "package/OBS 30-32/obs-plugins" -Recurse -Force
+          Copy-Item "release/data" "package/OBS 30-32/data" -Recurse -Force
+          Copy-Item "release/obs-plugins/64bit/geseki-bridge.dll" "package/OBS 33/geseki-bridge/" -Force
+          Copy-Item "release/obs-plugins/64bit/geseki-bridge-tiktok.exe" "package/OBS 33/geseki-bridge/" -Force
+          New-Item -ItemType Directory -Force -Path "package/OBS 33/geseki-bridge/data/locale" | Out-Null
+          Copy-Item "release/data/obs-plugins/geseki-bridge/locale/*" "package/OBS 33/geseki-bridge/data/locale/" -Force -Recurse
+          if (Test-Path "data/manifest.json") {
+            Copy-Item "data/manifest.json" "package/OBS 33/geseki-bridge/data/manifest.json" -Force
+          }
+          $lines = @(
+            "GESEKI BRIDGE - OBS 33 (PORTABLE MODE)",
+            "======================================",
+            "",
+            "1. Open the folder where your portable OBS lives (the folder that",
+            "   contains bin, data, and obs64.exe).",
+            "2. Create a new folder named `"plugins`" if it does not exist yet (in",
+            "   the root, next to bin and data).",
+            "3. Copy the `"geseki-bridge`" folder from this zip (next to this text",
+            "   file) into that `"plugins`" folder.",
+            "",
+            "The final result looks like this:",
+            "",
+            "  <portable OBS folder>/",
+            "    bin/",
+            "    config/",
+            "    data/",
+            "    plugins/",
+            "      geseki-bridge/",
+            "        geseki-bridge.dll",
+            "        geseki-bridge-tiktok.exe",
+            "        data/",
+            "          locale/",
+            "            en-US.ini",
+            "",
+            "4. Start OBS as usual. Check the Tools > Geseki menu to confirm the",
+            "   plugin loaded.",
+            "",
+            "NOTES",
+            "- For OBS versions 30 to 32 use the `"OBS 30-32`" folder from this zip.",
+            "- If your OBS is installed (not portable), copy the `"geseki-bridge`"",
+            "  folder into C:\ProgramData\obs-studio\plugins\ instead."
+          )
+          $lines | Set-Content -Path "package/OBS 33/HOW TO INSTALL.txt" -Encoding utf8
+          Compress-Archive -Path "package/OBS 30-32", "package/OBS 33" -DestinationPath "$name.zip" -Force
           echo "ASSET=$name.zip" >> $env:GITHUB_ENV
 
       - name: Build installer
         run: |
-          # Mirror obs-advanced-masks: ship a friendly one-click .exe alongside
-          # the manual zip. Inno Setup is fetched from its official GitHub
-          # releases mirror and installed silently, then ISCC compiles the
-          # script with the same flat tree the zip uses.
+          # Ship friendly one-click .exe installers for both OBS 33+ and legacy OBS 30-32.
           $version = (Get-Content buildspec.json -Raw | ConvertFrom-Json).version
           curl.exe -sL -o innosetup.exe "https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe"
           Start-Process -FilePath ".\innosetup.exe" -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/SP-","/CURRENTUSER" -Wait
-          New-Item -ItemType Directory -Force -Path "package" | Out-Null
-          Copy-Item "release/obs-plugins" "package/obs-plugins" -Recurse -Force
-          Copy-Item "release/data" "package/data" -Recurse -Force
           $env:GESEKI_VERSION = $version
-          # Inno Setup 6 installs per-user under LOCALAPPDATA with /CURRENTUSER;
-          # fall back to the machine-wide path if a runner image differs.
           $iscc = Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe"
           if (-not (Test-Path $iscc)) { $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" }
           if (-not (Test-Path $iscc)) { $iscc = "C:\Program Files\Inno Setup 6\ISCC.exe" }
           if (-not (Test-Path $iscc)) { throw "ISCC.exe not found after installing Inno Setup" }
+          # 1) OBS 33+ installer
           & $iscc /Qp installer.iss
           if (-not (Test-Path "package/geseki-bridge-$version-windows-installer.exe")) {
-            throw "Installer compile failed"
+            throw "OBS 33 installer compile failed"
           }
           $installer = "geseki-bridge-$version-windows-installer"
           Compress-Archive -Path "package/geseki-bridge-$version-windows-installer.exe" -DestinationPath "$installer.zip" -Force
           echo "INSTALLER=$installer.zip" >> $env:GITHUB_ENV
+          # 2) OBS 30-32 legacy installer
+          & $iscc /Qp installer-legacy.iss
+          if (-not (Test-Path "package/geseki-bridge-$version-windows-installer-legacy.exe")) {
+            throw "Legacy installer compile failed"
+          }
+          $installerLegacy = "geseki-bridge-$version-windows-installer-legacy"
+          Compress-Archive -Path "package/geseki-bridge-$version-windows-installer-legacy.exe" -DestinationPath "$installerLegacy.zip" -Force
+          echo "INSTALLER_LEGACY=$installerLegacy.zip" >> $env:GITHUB_ENV
+          # Clean up temporary package directory
+          Remove-Item -Recurse -Force package
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -108,6 +160,7 @@ jobs:
           path: |
             ${{ env.ASSET }}
             ${{ env.INSTALLER }}
+            ${{ env.INSTALLER_LEGACY }}
 
       - name: Detect prerelease
         run: |
@@ -128,7 +181,11 @@ jobs:
         with:
           name: ${{ env.REL_NAME }}
           prerelease: ${{ env.PRERELEASE == 'true' }}
+          body: |
+            Note:
+            This release includes both the new OBS 33+ style plugin for Windows, as well as the OBS 30-32 style plugin. Download filenames denoted with "Legacy" use the old format.
           files: |
             ${{ env.ASSET }}
             ${{ env.INSTALLER }}
+            ${{ env.INSTALLER_LEGACY }}
           generate_release_notes: true

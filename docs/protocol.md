@@ -35,13 +35,13 @@ The plugin also answers a small HTTP surface (outside the upgrade):
 `GET /health` returns:
 
 ```json
-{ "ok": true, "bridge": "geseki-bridge/1.0.0", "protocol": 1 }
+{ "ok": true, "bridge": "geseki-bridge/1.1.0", "protocol": 1 }
 ```
 
 `GET /bridge-port` returns:
 
 ```json
-{ "ok": true, "bridge": "geseki-bridge/1.0.0", "protocol": 1, "wsPort": 47800, "discoveryPort": 47800 }
+{ "ok": true, "bridge": "geseki-bridge/1.1.0", "protocol": 1, "wsPort": 47800, "discoveryPort": 47800 }
 ```
 
 ### Port discovery
@@ -91,7 +91,7 @@ Sent once, immediately after the socket opens.
 {
   "type": "hello",
   "protocol": 1,
-  "bridge": "geseki-bridge/1.0.0",
+  "bridge": "geseki-bridge/1.1.0",
   "capabilities": ["tiktok", "nowplaying"]
 }
 ```
@@ -288,7 +288,7 @@ REST payload used, so existing widget code keeps working.
 {
   "type": "nowplaying",
   "data": {
-    "app_version": "1.0.0",
+    "app_version": "1.1.0",
     "current_session_id": "Spotify.exe",
     "sessions": [
       {

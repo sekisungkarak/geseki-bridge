@@ -1,19 +1,12 @@
-; Inno Setup script for Geseki Bridge.
+; Inno Setup script for Geseki Bridge (OBS 33+).
 ;
-; Produces geseki-bridge-<version>-windows-installer.exe, which installs the
-; plugin straight into the OBS folder:
+; Produces geseki-bridge-<version>-windows-installer.exe, which installs
+; the plugin into the modern OBS 33+ plugins folder:
 ;
-;   <OBS>\obs-plugins\64bit\geseki-bridge.dll
-;   <OBS>\obs-plugins\64bit\geseki-bridge-tiktok.exe
-;   <OBS>\data\obs-plugins\geseki-bridge\locale\en-US.ini
-;
-; The default target is auto-detected:
-;   * installer OBS  -> HKLM\SOFTWARE\OBS Studio (the official setup writes it)
-;   * otherwise      -> C:\Program Files\obs-studio
-; The user can always browse to a portable OBS folder instead.
-;
-; The file tree under "package\" is the flat OBS layout produced by
-; cmake --install (obs-plugins/ + data/), so it is copied verbatim into {app}.
+;   %ProgramData%\obs-studio\plugins\geseki-bridge\geseki-bridge.dll
+;   %ProgramData%\obs-studio\plugins\geseki-bridge\geseki-bridge-tiktok.exe
+;   %ProgramData%\obs-studio\plugins\geseki-bridge\data\locale\en-US.ini
+;   %ProgramData%\obs-studio\plugins\geseki-bridge\data\manifest.json
 
 #define MyAppName "Geseki Bridge"
 #define MyAppVersion GetEnv("GESEKI_VERSION")
@@ -24,7 +17,7 @@
 #define MyAppURL "https://github.com/sekisungkarak/geseki-bridge"
 
 [Setup]
-AppId={{7B4E1C2A-5D3F-4A91-9E7C-2F8A6B0D3E51}
+AppId={{9C5F2D3B-6E4A-5B02-AF8D-3E9B7C1E4F62}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
@@ -33,9 +26,7 @@ AppSupportURL={#MyAppURL}
 VersionInfoVersion={#MyAppVersion}
 VersionInfoCompany={#MyAppPublisher}
 VersionInfoDescription={#MyAppName} Setup
-; No fixed DefaultDirName: it is chosen at runtime by GetOBSDir() below, which
-; reads the OBS install location so the plugin lands in the right tree.
-DefaultDirName={code:GetOBSDir}
+DefaultDirName={commonappdata}\obs-studio\plugins\geseki-bridge
 DisableDirPage=no
 DirExistsWarning=no
 AllowNoIcons=yes
@@ -45,11 +36,8 @@ LZMAAlgorithm=1
 WizardStyle=modern
 OutputDir=package
 OutputBaseFilename=geseki-bridge-{#MyAppVersion}-windows-installer
-; OBS is 64-bit only on Windows; install into the 64-bit Program Files view.
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-; Default target is Program Files\obs-studio, so request elevation by default;
-; the dialog override lets a user pick "only for me" if they want to.
 PrivilegesRequired=admin
 PrivilegesRequiredOverridesAllowed=dialog
 
@@ -57,23 +45,7 @@ PrivilegesRequiredOverridesAllowed=dialog
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Files]
-; Flat OBS tree: obs-plugins/ + data/ copied verbatim into the OBS folder.
-Source: "package\obs-plugins\*"; DestDir: "{app}\obs-plugins"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "package\data\*";        DestDir: "{app}\data";        Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "package\OBS 33\geseki-bridge\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
-
-[Code]
-function GetOBSDir(Param: string): string;
-var
-  InstallPath: string;
-begin
-  // Default to the standard installer location...
-  Result := ExpandConstant('{autopf}\obs-studio');
-  // ...but prefer whatever OBS Studio recorded in the registry at setup time.
-  if RegQueryStringValue(HKLM64, 'SOFTWARE\OBS Studio', '', InstallPath) then
-    Result := InstallPath
-  else if RegQueryStringValue(HKLM, 'SOFTWARE\OBS Studio', '', InstallPath) then
-    Result := InstallPath;
-end;

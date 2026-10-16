@@ -1,0 +1,11 @@
+{
+    "display_name": "Geseki Bridge",
+    "id": "gg.sekisungkarak.geseki-bridge",
+    "version": "1.1.0",
+    "authors": ["Sekisungkarak"],
+    "name": "geseki-bridge",
+    "description": "Bridge plugin for Geseki streaming overlay widgets",
+    "urls": {
+        "repository": "https://github.com/sekisungkarak/geseki-bridge"
+    }
+}

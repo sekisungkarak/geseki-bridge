@@ -23,7 +23,7 @@ import (
 	gotiktoklive "github.com/steampoweredtaco/gotiktoklive"
 )
 
-const version = "1.0.0"
+const version = "1.1.0"
 
 // ---------------------------------------------------------------- stdio I/O
 
